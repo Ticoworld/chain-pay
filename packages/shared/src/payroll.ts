@@ -30,6 +30,7 @@ export interface PayrollBatch extends Identified, Timestamped {
   state: PayrollBatchState;
   /** Pending tx id once the batch produces a single multisig tx. */
   pendingTxId?: string;
+  confirmedAt?: string;
   /**
    * Frozen skeleton — hex of the CCC Transaction's serialized bytes at build
    * time. Required so PayPanel can resume from step 5/6 across navigation +

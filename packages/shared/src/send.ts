@@ -26,6 +26,7 @@ export interface SendRecord extends Identified, Timestamped {
   feeShannons: bigint;
   state: SendState;
   txHash?: TransactionHash;
+  confirmedAt?: string;
   journalEntryName?: string;
   postError?: string;
 }

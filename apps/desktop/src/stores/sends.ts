@@ -46,7 +46,13 @@ function transition(
   return sends.map((s) => {
     if (s.id !== id) return s;
     assertCanTransition(s.state, to);
-    return { ...patch(s), state: to, updatedAt: new Date().toISOString() };
+    const updatedAt = new Date().toISOString();
+    return {
+      ...patch(s),
+      state: to,
+      updatedAt,
+      ...(to === "confirmed" ? { confirmedAt: updatedAt } : {}),
+    };
   });
 }
 
@@ -69,7 +75,7 @@ export const useSendsStore = create<SendsStore>()(
         set((st) => ({
           sends: transition(st.sends, id, "posting", (s) => {
             const { postError: _drop, ...rest } = s;
-            return rest;
+            return { ...rest, confirmedAt: s.confirmedAt ?? s.updatedAt };
           }),
         })),
       markPosted: (id, jeName) =>
