@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useKeyvaultStore } from "./keyvault-store";
 import { ReceivePanel } from "./ReceivePanel";
 import { buildKeystoreSource } from "./keystore-source";
@@ -84,7 +84,7 @@ function ErrorBanner({ message }: ErrorBannerProps) {
 // Panel modes
 // ---------------------------------------------------------------------------
 
-type PanelMode = "idle" | "creating" | "showing-mnemonic" | "importing" | "active";
+type PanelMode = "idle" | "creating" | "importing" | "active";
 
 // ---------------------------------------------------------------------------
 // Main panel
@@ -94,11 +94,8 @@ type PanelMode = "idle" | "creating" | "showing-mnemonic" | "importing" | "activ
  * Keyvault setup panel: create a new local keystore, import an existing
  * mnemonic, or manage an existing vault.
  *
- * Security invariants:
- * - The mnemonic returned by `createNew` is held ONLY in local React state.
- * - It is cleared immediately when the user confirms ("I've written it down").
- * - A `useEffect` cleanup also clears it on unmount, so no route-change leak.
- * - The mnemonic is NEVER stored in the Zustand store.
+ * Recovery words are displayed by Electron main in a native dialog and never
+ * enter this component, the Zustand store, or the app renderer's IPC bridge.
  */
 export function KeyvaultSetupPanel() {
   const { exists, lockArgs, refreshStatus, createNew, importMnemonic, deleteVault } =
@@ -106,29 +103,20 @@ export function KeyvaultSetupPanel() {
 
   const [mode, setMode] = useState<PanelMode>(exists ? "active" : "idle");
   const [password, setPassword] = useState("");
-  const [mnemonicInput, setMnemonicInput] = useState("");
+  const [exportPassword, setExportPassword] = useState("");
+  const [showExport, setShowExport] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const [deletePassword, setDeletePassword] = useState("");
   const [addingSource, setAddingSource] = useState(false);
   const [addedSource, setAddedSource] = useState(false);
   const network = useNetworkConfigStore((s) => s.network);
 
-  // SECURITY: Mnemonic lives ONLY here — NOT in the store, NOT logged.
-  const [mnemonic, setMnemonic] = useState("");
-
-  // SECURITY: Clear mnemonic on unmount (e.g. user navigates away mid-flow).
-  const setMnemonicRef = useRef(setMnemonic);
-  setMnemonicRef.current = setMnemonic;
-  useEffect(() => {
-    return () => {
-      setMnemonicRef.current("");
-    };
-  }, []);
-
   // Sync mode when `exists` changes (e.g. after refreshStatus on mount).
   useEffect(() => {
-    if (exists && mode !== "showing-mnemonic") {
+    if (exists) {
       setMode("active");
     }
     if (!exists && mode === "active") {
@@ -149,7 +137,6 @@ export function KeyvaultSetupPanel() {
 
   function clearFormState(): void {
     setPassword("");
-    setMnemonicInput("");
     setError(null);
     setLoading(false);
   }
@@ -158,10 +145,9 @@ export function KeyvaultSetupPanel() {
     setError(null);
     setLoading(true);
     try {
-      const result = await createNew(password);
+      await createNew(password);
       setPassword("");
-      setMnemonic(result.mnemonic); // held in local state only
-      setMode("showing-mnemonic");
+      setMode("active");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Wallet creation failed");
     } finally {
@@ -169,17 +155,11 @@ export function KeyvaultSetupPanel() {
     }
   }
 
-  function handleMnemonicConfirmed(): void {
-    setMnemonic(""); // SECURITY: clear immediately on user confirmation
-    setMode("active");
-    setError(null);
-  }
-
   async function handleImport(): Promise<void> {
     setError(null);
     setLoading(true);
     try {
-      await importMnemonic(mnemonicInput, password);
+      await importMnemonic(password);
       clearFormState();
       setMode("active");
     } catch (err) {
@@ -188,11 +168,26 @@ export function KeyvaultSetupPanel() {
     }
   }
 
+  async function handleExport(): Promise<void> {
+    setError(null);
+    setExporting(true);
+    try {
+      await window.chainpay.keyvault.export("main", exportPassword);
+      setExportPassword("");
+      setShowExport(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Recovery word export failed");
+    } finally {
+      setExporting(false);
+    }
+  }
+
   async function handleDelete(): Promise<void> {
-    setDeleteConfirm(false);
     setError(null);
     try {
-      await deleteVault();
+      await deleteVault(deletePassword);
+      setDeletePassword("");
+      setDeleteConfirm(false);
       setMode("idle");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Delete failed");
@@ -300,62 +295,15 @@ export function KeyvaultSetupPanel() {
     );
   }
 
-  // — Create flow: show mnemonic once —
-  if (mode === "showing-mnemonic") {
-    const words = mnemonic.trim().split(/\s+/);
-    return wrapper(
-      <div className="space-y-4">
-        <div
-          role="alert"
-          className="rounded-lg border border-warn/40 bg-warn/5 p-3 text-sm text-warn"
-        >
-          <strong>Write these words down.</strong> They are shown exactly once and cannot be
-          recovered if lost. Store them securely offline.
-        </div>
-        <ol
-          aria-label="Recovery mnemonic"
-          className="grid grid-cols-3 gap-2 rounded-lg border border-surface-hi bg-bg p-4 text-sm font-mono"
-        >
-          {words.map((word, i) => (
-            <li key={i} className="flex items-center gap-2">
-              <span className="w-5 text-right text-xs text-fg-muted">{i + 1}.</span>
-              <span>{word}</span>
-            </li>
-          ))}
-        </ol>
-        <button
-          type="button"
-          onClick={handleMnemonicConfirmed}
-          className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-fg hover:opacity-90"
-        >
-          I&apos;ve written it down — continue
-        </button>
-      </div>,
-    );
-  }
-
   // — Import flow —
   if (mode === "importing") {
     return wrapper(
       <div className="space-y-4">
         <p className="text-sm text-fg-muted">
-          Paste your 12- or 24-word BIP39 mnemonic phrase, then choose a password to protect it
-          on this device.
+          Copy your 12- or 24-word recovery phrase, then choose a password. ChainPay reads
+          and clears the current clipboard in the Electron main process when you import.
+          Clipboard history maintained by your operating system may retain an earlier copy.
         </p>
-        <div className="space-y-1">
-          <label htmlFor="kv-import-mnemonic" className="block text-sm text-fg-muted">
-            Mnemonic phrase
-          </label>
-          <textarea
-            id="kv-import-mnemonic"
-            rows={3}
-            autoFocus
-            value={mnemonicInput}
-            onChange={(e) => setMnemonicInput(e.target.value)}
-            placeholder="abandon abandon abandon …"
-            className="w-full rounded-md border border-surface-hi bg-bg px-3 py-2 text-sm font-mono outline-none focus:border-accent"
-          />
-        </div>
         <PasswordField
           id="kv-import-password"
           label="Wallet password"
@@ -366,10 +314,10 @@ export function KeyvaultSetupPanel() {
           <button
             type="button"
             onClick={() => void handleImport()}
-            disabled={loading || mnemonicInput.trim().length === 0 || password.length < 8}
+            disabled={loading || password.length < 8}
             className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-fg hover:opacity-90 disabled:opacity-50"
           >
-            {loading ? "Importing…" : "Import wallet"}
+            {loading ? "Importing…" : "Import from clipboard"}
           </button>
           <button
             type="button"
@@ -399,6 +347,45 @@ export function KeyvaultSetupPanel() {
       </div>
 
       {error && <ErrorBanner message={error} />}
+
+      {showExport ? (
+        <div className="space-y-3 rounded-lg border border-surface-hi bg-bg p-4">
+          <p className="text-sm text-fg-muted">
+            Enter your wallet password to show recovery words in a native dialog.
+          </p>
+          <PasswordField
+            id="kv-export-password"
+            label="Wallet password"
+            value={exportPassword}
+            onChange={setExportPassword}
+          />
+          <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={() => void handleExport()}
+              disabled={exporting || exportPassword.length === 0}
+              className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-fg hover:opacity-90 disabled:opacity-50"
+            >
+              {exporting ? "Opening…" : "Show recovery words"}
+            </button>
+            <button
+              type="button"
+              onClick={() => { setExportPassword(""); setShowExport(false); }}
+              className="rounded-md border border-surface-hi px-4 py-2 text-sm font-medium hover:opacity-90"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setShowExport(true)}
+          className="rounded-md border border-surface-hi bg-bg px-4 py-2 text-sm font-medium hover:opacity-90"
+        >
+          Back up recovery words
+        </button>
+      )}
 
       {/* Promote this keystore into a send source wallet */}
       {addedSource ? (
@@ -433,17 +420,24 @@ export function KeyvaultSetupPanel() {
             This permanently deletes the encrypted vault from disk. The seed cannot be recovered
             without your mnemonic backup.
           </p>
+          <PasswordField
+            id="kv-delete-password"
+            label="Wallet password"
+            value={deletePassword}
+            onChange={setDeletePassword}
+          />
           <div className="flex gap-2">
             <button
               type="button"
               onClick={() => void handleDelete()}
-              className="rounded-md bg-danger px-3 py-1 text-xs font-medium text-white"
+              disabled={deletePassword.length === 0}
+              className="rounded-md bg-danger px-3 py-1 text-xs font-medium text-white disabled:opacity-50"
             >
               Yes, delete
             </button>
             <button
               type="button"
-              onClick={() => setDeleteConfirm(false)}
+              onClick={() => { setDeletePassword(""); setDeleteConfirm(false); }}
               className="rounded-md border border-surface-hi bg-bg px-3 py-1 text-xs"
             >
               Cancel

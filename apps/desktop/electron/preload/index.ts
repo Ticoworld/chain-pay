@@ -202,17 +202,16 @@ const chainpayApi = {
     /** Check whether a keyvault blob exists on disk. */
     status: (): Promise<{ exists: boolean }> =>
       ipcRenderer.invoke(KEYVAULT_CHANNELS.status),
-    /** Generate a new BIP39 mnemonic, encrypt it, and persist it. */
+    /** Generate and display recovery words in a native main-process dialog. */
     create: (
       password: string,
-    ): Promise<{ id: string; lockArgs: string; mnemonic: string }> =>
+    ): Promise<{ id: string; lockArgs: string }> =>
       ipcRenderer.invoke(KEYVAULT_CHANNELS.create, { password }),
-    /** Import an existing BIP39 mnemonic phrase into a new keyvault. */
+    /** Import recovery words from the system clipboard in Electron main. */
     import: (
-      mnemonic: string,
       password: string,
     ): Promise<{ id: string; lockArgs: string }> =>
-      ipcRenderer.invoke(KEYVAULT_CHANNELS.import, { mnemonic, password }),
+      ipcRenderer.invoke(KEYVAULT_CHANNELS.import, { password }),
     /** Decrypt the keyvault and return derived lock-args without signing. */
     unlockDerive: (
       keyvaultId: string,
@@ -227,11 +226,11 @@ const chainpayApi = {
     /** Sign a CKB tx inside main (anti-blind-sign enforced; digest recomputed in main). */
     signTx: (req: SignTxRequest): Promise<{ signedTx: string }> =>
       ipcRenderer.invoke(KEYVAULT_CHANNELS.signTx, req),
-    /** Export the mnemonic phrase (shown once; caller must zeroize). */
+    /** Show recovery words in a native main-process dialog. */
     export: (
       keyvaultId: string,
       password: string,
-    ): Promise<{ mnemonic: string }> =>
+    ): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke(KEYVAULT_CHANNELS.export, { keyvaultId, password }),
     /** Re-encrypt the keyvault blob under a new password. */
     changePassword: (
@@ -244,9 +243,9 @@ const chainpayApi = {
         oldPassword,
         newPassword,
       }),
-    /** Permanently delete the keyvault blob from disk. */
-    delete: (keyvaultId: string): Promise<{ ok: boolean }> =>
-      ipcRenderer.invoke(KEYVAULT_CHANNELS.delete, { keyvaultId }),
+    /** Permanently delete the keyvault blob after main verifies its password. */
+    delete: (keyvaultId: string, password: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke(KEYVAULT_CHANNELS.delete, { keyvaultId, password }),
   },
 };
 
