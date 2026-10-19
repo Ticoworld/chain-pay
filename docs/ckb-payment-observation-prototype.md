@@ -11,7 +11,7 @@ The display reports local pending evidence, reported inclusion with local depth,
 or uncertainty with a reason. Depth includes the inclusion block and is relative
 to one sampled local tip, not a finality threshold or a globally current tip.
 It requires matching transaction/hash/header data, continuous parent headers,
-a stable sampled tip, connected peers and a recent tip timestamp. Missing data,
+a stable sampled tip, non-empty peer metadata and a recent tip timestamp. Missing data,
 session/network changes and conflicting ancestry withhold the count. Disappearing
 evidence never means a payment failed or should be sent again.
 
@@ -56,3 +56,12 @@ test or a simulation of CKB consensus. Before proposing release, run browser LC
 acceptance with an already broadcast recent transaction, measure parent-header
 availability and verify disconnect/reconnect, restart and an isolated fork.
 No new payment or real signing credentials are needed for the first check.
+
+Live browser acceptance subsequently demonstrated public-testnet proof fetching,
+inclusion, parent traversal and concurrent observations through the pinned client.
+It also showed that peer metadata can remain non-empty after all instrumented
+worker WebSockets close. A freshly checked cached count therefore does not prove
+current connectivity. After restart, missing parents can temporarily withhold
+depth; after the 64-link budget, a previously included payment loses its current
+count. These limits require a smaller presentation separating last observed
+inclusion from current connectivity/ancestry uncertainty before proposing release.
