@@ -260,6 +260,14 @@ docker exec chainpay-backend bench --site chainpay.localhost run-tests --module 
 docker exec chainpay-backend bench --site chainpay.localhost run-tests --module crypto_payroll.tests.test_chains
 ```
 
+For an opt-in rehearsal through real HTTP authentication, ERPNext journals and
+compliance exports, run `npm run test:accounting:acceptance`. It provisions a
+fresh disposable Docker environment, installs locked dependencies, verifies
+replay and removes its containers/volumes. Only Node/npm and Docker are needed
+on the host. See
+[accounting acceptance](docs/accounting-acceptance.md) for requirements, artifacts
+and coverage limits.
+
 What to expect on first launch:
 
 1. Window opens, Dashboard route.

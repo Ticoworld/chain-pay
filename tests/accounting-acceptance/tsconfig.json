@@ -1,0 +1,23 @@
+{
+  "extends": "../../apps/desktop/tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "baseUrl": "../..",
+    "paths": {
+      "@/*": [
+        "apps/desktop/src/*"
+      ],
+      "@shared/*": [
+        "packages/shared/src/*"
+      ],
+      "@chain-pay/shared": [
+        "packages/shared/src/index.ts"
+      ]
+    }
+  },
+  "include": [
+    "./*.ts",
+    "../../apps/desktop/src/vite-env.d.ts",
+    "../../apps/desktop/src/types/**/*.d.ts"
+  ]
+}

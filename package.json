@@ -16,7 +16,8 @@
     "build:shared": "npm --workspace packages/shared run build",
     "build:keyvault-wasm": "cd packages/ckb-keyvault-wasm && wasm-pack build --target nodejs",
     "typecheck": "npm --workspaces --if-present run typecheck",
-    "lint": "npm --workspaces --if-present run lint"
+    "lint": "npm --workspaces --if-present run lint",
+    "test:accounting:acceptance": "node scripts/accounting-acceptance.mjs"
   },
   "engines": {
     "node": ">=22.12.0",

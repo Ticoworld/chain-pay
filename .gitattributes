@@ -1,0 +1,3 @@
+scripts/backend-up.sh text eol=lf
+scripts/lib/backend-site-setup.sh text eol=lf
+tests/accounting-acceptance/*.sh text eol=lf

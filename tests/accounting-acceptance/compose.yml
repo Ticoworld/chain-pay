@@ -1,0 +1,39 @@
+services:
+  db:
+    image: mariadb@sha256:88ac718dafee1e8fb415233c04f314f3c3866af99177ce25d436106c62090461
+    environment:
+      MARIADB_ROOT_PASSWORD: disposable-acceptance-only
+    command: [--character-set-server=utf8mb4, --collation-server=utf8mb4_unicode_ci, --skip-character-set-client-handshake]
+    volumes:
+      - database:/var/lib/mysql
+    healthcheck:
+      test: [CMD, healthcheck.sh, --connect, --innodb_initialized]
+      interval: 5s
+      retries: 30
+  redis-cache:
+    image: redis@sha256:b362b5dff9d14d961dc3352db4776aba6a8c53ca2661d7c74ad2c121f82cdaea
+  redis-queue:
+    image: redis@sha256:b362b5dff9d14d961dc3352db4776aba6a8c53ca2661d7c74ad2c121f82cdaea
+  backend:
+    image: frappe/erpnext@sha256:ad1f567771a87961c20f1516df6b11228a3eac31cfba00d358b23803b7b44f4b
+    entrypoint: [bash, -lc, "sleep infinity"]
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+      - ../../apps/backend/apps/crypto_payroll:/opt/chainpay-app:ro
+      - ../../scripts/lib/backend-site-setup.sh:/opt/backend-site-setup.sh:ro
+      - .:/acceptance:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      redis-cache:
+        condition: service_started
+      redis-queue:
+        condition: service_started
+  node:
+    image: node@sha256:1c18d9ab3af4585870b92e4dbc5cac5a0dc77dd13df1a5905cea89fc720eb05b
+    entrypoint: [bash, -lc, "sleep infinity"]
+    volumes:
+      - ../..:/source:ro
+volumes:
+  database:
+  sites:
