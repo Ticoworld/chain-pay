@@ -13,6 +13,25 @@ vi.mock("@nervosnetwork/ckb-light-client-js", () => ({
 import { LightClientHost } from "./host";
 
 describe("session-bound observation reader", () => {
+  it("settles an observation query when stop terminates a native worker that never replies", async () => {
+    const previousWindow = globalThis.window;
+    Object.assign(globalThis, { window: { localStorage: { getItem: () => null, setItem: () => undefined } } });
+    const host = new LightClientHost();
+    try {
+      await host.start("testnet");
+      client.getTransaction.mockImplementationOnce(() => new Promise<undefined>(() => undefined));
+      const read = host.paymentObservationReader().getTransaction("0x1234")
+        .then(() => "completed", () => "interrupted");
+      await host.stop();
+      expect(await Promise.race([
+        read, new Promise((resolve) => setTimeout(() => resolve("still pending"), 30)),
+      ])).toBe("interrupted");
+    } finally {
+      await host.stop();
+      Object.assign(globalThis, { window: previousWindow });
+    }
+  });
+
   it("delegates to LC queries and invalidates a reader on stop or same-network restart", async () => {
     const previousWindow = globalThis.window;
     Object.assign(globalThis, { window: { localStorage: { getItem: () => null, setItem: () => undefined } } });

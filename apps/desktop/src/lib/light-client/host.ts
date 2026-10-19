@@ -59,6 +59,7 @@ export class LightClientHost {
   private snapshotListeners = new Set<SnapshotListener>();
   private errorListeners = new Set<ErrorListener>();
   private lastSnapshot: SyncSnapshot | null = null;
+  private observationQueries = new Set<() => void>();
   /**
    * Optional full-node JSON-RPC URL. When non-empty, transactions are
    * broadcast through it instead of the embedded light client's relay
@@ -125,6 +126,8 @@ export class LightClientHost {
     this.client = null;
     this.network = null;
     this.lastSnapshot = null;
+    for (const cancel of this.observationQueries) cancel();
+    this.observationQueries.clear();
     try {
       await client.stop();
     } catch (error: unknown) {
@@ -168,13 +171,27 @@ export class LightClientHost {
     const network = this.network;
     return {
       currentNetwork: () => this.client === client ? network : null,
-      getTipHeader: () => client.getTipHeader(),
-      getPeers: () => client.getPeers(),
-      getTransaction: (hash) => client.getTransaction(hash),
-      fetchTransaction: (hash) => client.fetchTransaction(hash),
-      getHeader: (hash) => client.getHeader(hash),
-      fetchHeader: (hash) => client.fetchHeader(hash),
+      getTipHeader: () => this.queryObservation(client, () => client.getTipHeader()),
+      getPeers: () => this.queryObservation(client, () => client.getPeers()),
+      getTransaction: (hash) => this.queryObservation(client, () => client.getTransaction(hash)),
+      fetchTransaction: (hash) => this.queryObservation(client, () => client.fetchTransaction(hash)),
+      getHeader: (hash) => this.queryObservation(client, () => client.getHeader(hash)),
+      fetchHeader: (hash) => this.queryObservation(client, () => client.fetchHeader(hash)),
     };
+  }
+
+  private queryObservation<Value>(client: LightClient, query: () => Promise<Value>): Promise<Value> {
+    if (this.client !== client) return Promise.reject(new Error("light-client observation session ended"));
+    let cancel = () => undefined as void;
+    return new Promise<Value>((resolve, reject) => {
+      cancel = () => reject(new Error("light-client observation session ended"));
+      this.observationQueries.add(cancel);
+      try {
+        void query().then(resolve, reject);
+      } catch (error) {
+        reject(error);
+      }
+    }).finally(() => this.observationQueries.delete(cancel));
   }
 
   async getCellsCapacity(searchKey: Parameters<LightClient["getCellsCapacity"]>[0]) {

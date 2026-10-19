@@ -28,6 +28,9 @@ heuristics, not consensus rules. Hanging reads show uncertainty after 20 seconds
 the native worker request is not cancellable and no overlapping poll is started
 within that mounted observation. Disabling/unmounting clears timers and ignores
 late results; already requested peer/cache work may continue.
+Stopping the native session rejects outstanding observation queries so a worker
+terminated before replying cannot permanently stall observation after restart.
+This cancellation wrapper applies only to the read-only observation port.
 
 The LC API returns normalized transaction/block associations, not a raw Merkle
 proof and its validation anchor. Parent traversal validates the reported block's
