@@ -1,6 +1,6 @@
 # ChainPay
 
-Crypto-native payroll & accounting suite. CKB and EVM multisig treasuries, **embedded WASM CKB light client** in the desktop app, no private key custody.
+Crypto-native payroll & accounting suite. CKB and EVM multisig treasuries, **embedded WASM CKB light client** in the desktop app, and external treasury signers. A scoped local keystore supports single-signature CKB sends.
 
 > [!NOTE]
 > The CKB path is shipped end-to-end on testnet: multisig payroll, single-sig
@@ -15,13 +15,13 @@ Existing crypto payroll tools fall into one of two buckets:
 1. **Custodial SaaS** — your payroll provider holds the keys. Convenient, defeats the entire point of crypto.
 2. **Hand-rolled multisig + spreadsheets** — non-custodial but no payroll workflow, no journal entries, no compliance exports.
 
-ChainPay aims to be the middle ground: a desktop app that lets a small org run payroll from a self-custodied multisig treasury, post every confirmed payment as a journal entry into ERPNext / Frappe HR, and ship compliance exports — without ever holding a private key and without trusting an Infura-style RPC provider.
+ChainPay aims to be the middle ground: a desktop app that lets a small org run payroll from a self-custodied multisig treasury, post every confirmed payment as a journal entry into ERPNext / Frappe HR, and ship compliance exports — without holding treasury private keys or trusting an Infura-style CKB RPC provider.
 
 The trust-minimisation half is the differentiator. The CKB light client is **embedded directly inside the desktop app** as a WASM bundle and verifies mainnet headers itself. There is no `wss://my-favourite-rpc-provider.com` in the loop. See [docs/light-client-integration.md](docs/light-client-integration.md) for the full architecture.
 
 ## Design pillars (these constrain every decision)
 
-1. **No key custody, ever.** All signing happens in external wallets (JoyID, Ledger, MetaMask, WalletConnect, ckb-cli keystore). ChainPay coordinates partial signatures only.
+1. **Treasury keys stay external.** CKB multisig signers use external ckb-cli keystores; EVM Safe owners use external MetaMask or WalletConnect wallets. ChainPay coordinates partial signatures. The only local-key exception is an encrypted BIP39 keystore for non-treasury, single-signature CKB sends. It signs inside Electron main after checking the transaction digest and source lock args; key material never crosses renderer IPC.
 2. **Light client first.** Tempted to call a third-party RPC? Stop. Use the embedded light client. Remote RPC is a fallback config flag, not the default.
 3. **Multisig is the trust root.** MetaMask is a signer *transport*, not a treasury. Safe is the EVM treasury. `secp256k1_blake160_multisig_all` is the CKB treasury.
 4. **Adapters stay adapters.** All chain code lives behind the `ChainAdapter` / `SignerTransport` interfaces. Payroll, treasury, and accounting logic must never know whether a chain is CKB or EVM.
@@ -38,7 +38,7 @@ The trust-minimisation half is the differentiator. The CKB light client is **emb
 | 2.7a–b | Comm channel: on-chain encrypted signature relay (CEMP-PQ — ML-DSA + ML-KEM, Profile Cells, ack loop) | ✅ done — PRs #1–#4 merged; first confirmed A↔B testnet roundtrip 2026-05-24 |
 | 2.7c | Mainnet plumbing, network-switch UX, auto-broadcast with 5s countdown, lifecycle-bound retry | ✅ done — PR #6 merged `d090354` (2026-05-29); fast-path manual smoke surfaced and fixed 4 bugs (preload namespace, missing `app.quit` IPC, hooks-rules in mainnet-conditional renders) |
 | 3a | Invoice ingest — manual entry + payee flow, vendor flow, draft autosave, approve-and-queue, batch↔invoice confirmation sync | ✅ done — PR #7 merged `8a3b426` (2026-05-29); shell-level smoke clean on `main` |
-| 3b | Invoice ingest — OCR extraction + multi-invoice bundling | planned (deferred from 3a scope) |
+| 3b–c | Invoice ingest — OCR extraction, multi-invoice bundling, optional Surya backend | ✅ implemented; real-document smoke playbooks remain |
 | 3 (EVM) | EVM (Safe) treasury — external owner signers | 🟡 Slices A–E implemented: Sepolia monitoring, MetaMask + WalletConnect approvals, cross-instance interchange, execution, confirmation, and ERPNext accounting; live two-instance gate remains |
 | 4 | Frappe accounting bridge — persisted confirmed payments → server-derived journal entries | ✅ CKB + Sepolia Safe + finalized SOL + finalized BTC paths, immutable source records and idempotent JEs |
 | 5+ | BTC, SOL, fiat ramps, mobile signer companion | 🟡 BTC A/A2/A3 and SOL B1/B2A/B2B implemented; fiat ramps remain |
@@ -126,7 +126,7 @@ If you're porting this WASM bundle into any other Electron / Tauri / browser app
 | Tables / charts | TanStack Table + Recharts |
 | Tests | Vitest + @vitest/coverage-v8 |
 | CKB | embedded `@nervosnetwork/ckb-light-client-js` (WASM) + `@ckb-ccc/core` for tx construction |
-| EVM | viem + wagmi + `@safe-global/protocol-kit` (planned, Phase 3) |
+| EVM | viem + wagmi + `@safe-global/protocol-kit` (Sepolia Safe slices A–E implemented; live two-instance gate remains) |
 | Backend | ERPNext + custom `crypto_payroll` Frappe app |
 | DB (backend) | MariaDB via Frappe |
 

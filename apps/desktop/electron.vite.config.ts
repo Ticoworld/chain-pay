@@ -32,6 +32,7 @@ export default defineConfig({
   },
   renderer: {
     root: ".",
+    base: "/",
     build: {
       outDir: "out/renderer",
       rollupOptions: {

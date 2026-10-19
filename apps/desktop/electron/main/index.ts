@@ -35,10 +35,12 @@ import { registerKeyvaultHost } from "./keyvault-host";
 import { registerBitcoinIpc } from "./bitcoin-host";
 import { registerSolanaIpc } from "./solana-host";
 import type { CkbNetwork } from "@/lib/light-client/network-configs";
+import { rendererPortForProfile, startRendererServer } from "./renderer-protocol";
 
 const isDev = !app.isPackaged;
 
 let mainWindow: BrowserWindow | null = null;
+let rendererServer: Awaited<ReturnType<typeof startRendererServer>> | null = null;
 
 let rootKeypairCache: RootKeypair | null = null;
 let rootKeypairPromise: Promise<RootKeypair> | null = null;
@@ -145,16 +147,33 @@ async function createWindow(): Promise<void> {
   });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    try {
+      const destination = new URL(url);
+      if (destination.protocol === "https:" || destination.protocol === "http:") {
+        void shell.openExternal(url).catch(() => undefined);
+      }
+    } catch {
+      // Reject malformed destinations from the untrusted renderer.
+    }
     return { action: "deny" };
+  });
+
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    const allowedOrigin = isDev && process.env.ELECTRON_RENDERER_URL
+      ? new URL(process.env.ELECTRON_RENDERER_URL).origin
+      : rendererServer?.origin;
+    try {
+      if (new URL(url).origin !== allowedOrigin) event.preventDefault();
+    } catch {
+      event.preventDefault();
+    }
   });
 
   mainWindow.once("ready-to-show", () => mainWindow?.show());
 
   if (isDev) {
-    mainWindow.webContents.on("console-message", (_event, level, message, line, sourceId) => {
-      const tag = ["LOG", "WARN", "ERROR", "DBG"][level] ?? "LOG";
-      process.stdout.write(`[renderer ${tag}] ${message} (${sourceId}:${line})\n`);
+    mainWindow.webContents.on("console-message", (details) => {
+      process.stdout.write(`[renderer ${details.level.toUpperCase()}] ${details.message} (${details.sourceId}:${details.lineNumber})\n`);
     });
     mainWindow.webContents.openDevTools({ mode: "detach" });
   }
@@ -162,7 +181,12 @@ async function createWindow(): Promise<void> {
   if (isDev && process.env.ELECTRON_RENDERER_URL) {
     await mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
   } else {
-    await mainWindow.loadFile(join(__dirname, "../renderer/index.html"));
+    rendererServer ??= await startRendererServer(
+      join(__dirname, "../renderer"),
+      CSP,
+      rendererPortForProfile(app.getPath("userData")),
+    );
+    await mainWindow.loadURL(`${rendererServer.origin}/`);
   }
 }
 
@@ -224,19 +248,17 @@ app.whenReady().then(async () => {
 
   // keyvault host — encrypted BIP39 signer (single-sig SMB send path only).
   // The WASM pkg is a synchronous CJS module (wasm-pack --target nodejs).
-  // Both this source file (electron/main/) and the compiled output (out/main/)
-  // are 4 levels deep in the workspace, so the relative path is the same.
+  // In development the pkg lives in the workspace. The packaged app copies
+  // it into resources so the main process can load the JS and adjacent WASM.
   {
     const kvStore = new KeyvaultStore(
       path.join(app.getPath("userData"), "keyvault"),
     );
     const _require = createRequire(import.meta.url);
-    const keyvaultWasm = _require(
-      join(
-        __dirname,
-        "../../../../packages/ckb-keyvault-wasm/pkg/ckb_keyvault_wasm.js",
-      ),
-    ) as Parameters<typeof registerKeyvaultHost>[0]["wasm"];
+    const wasmPath = app.isPackaged
+      ? join(process.resourcesPath, "ckb-keyvault-wasm", "ckb_keyvault_wasm.js")
+      : join(__dirname, "../../../../packages/ckb-keyvault-wasm/pkg/ckb_keyvault_wasm.js");
+    const keyvaultWasm = _require(wasmPath) as Parameters<typeof registerKeyvaultHost>[0]["wasm"];
     registerKeyvaultHost({ store: kvStore, wasm: keyvaultWasm });
   }
 
@@ -305,7 +327,7 @@ app.on("will-quit", (e) => {
   if (quitting) return;
   e.preventDefault();
   quitting = true;
-  stopPairServer().finally(() => app.quit());
+  Promise.allSettled([stopPairServer(), rendererServer?.close()]).finally(() => app.quit());
 });
 
 app.on("window-all-closed", () => {
