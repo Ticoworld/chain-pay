@@ -98,6 +98,12 @@ export class BitcoinProviderError extends Error {
   constructor(
     readonly code: "not_configured" | "unavailable" | "invalid_response" | "invalid_request" | "rejected" | "txid_mismatch" | "not_finalized" | "evidence_mismatch",
     message: string,
+    /**
+     * Upstream HTTP status, when the request produced a response at all.
+     * A bounded integer is the only upstream detail safe to surface: the URL,
+     * the bearer token, and the response body are all withheld deliberately.
+     */
+    readonly httpStatus?: number,
   ) {
     super(message);
     this.name = "BitcoinProviderError";
@@ -515,9 +521,9 @@ class EsploraClient {
       if (allowNotFound && response.status === 404) return response;
       if (!response.ok) {
         if (method === "POST" && response.status >= 400 && response.status < 500) {
-          throw new BitcoinProviderError("rejected", "Bitcoin provider rejected the transaction");
+          throw new BitcoinProviderError("rejected", "Bitcoin provider rejected the transaction", response.status);
         }
-        throw unavailable();
+        throw unavailable(response.status);
       }
       return response;
     } catch (error) {
@@ -647,8 +653,9 @@ function parseHash(value: string): string {
   return value;
 }
 
-function unavailable(): BitcoinProviderError {
-  return new BitcoinProviderError("unavailable", "Bitcoin provider is unavailable");
+function unavailable(httpStatus?: number): BitcoinProviderError {
+  const suffix = httpStatus === undefined ? "" : ` (HTTP ${httpStatus})`;
+  return new BitcoinProviderError("unavailable", `Bitcoin provider is unavailable${suffix}`, httpStatus);
 }
 
 function invalidResponse(): BitcoinProviderError {

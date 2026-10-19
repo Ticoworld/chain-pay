@@ -128,13 +128,64 @@ describe("Esplora Bitcoin provider", () => {
     await expect(promise).rejects.toEqual(
       expect.objectContaining<Partial<BitcoinProviderError>>({
         code: "unavailable",
-        message: "Bitcoin provider is unavailable",
+        message: "Bitcoin provider is unavailable (HTTP 500)",
       }),
     );
     await promise.catch((error: unknown) => {
       const text = String(error);
       expect(text).not.toContain("top-secret");
       expect(text).not.toContain("private.example");
+    });
+  });
+
+  it("reports the HTTP status so a rejected request is distinguishable from provider downtime", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      new Response("Too many history entries", { status: 400 }),
+    );
+    const promise = scanBitcoinAddresses({
+      chain: "btc:mainnet",
+      addresses: [ADDRESS_A],
+      config: { baseUrl: "https://private.example/api", bearerToken: "top-secret" },
+      fetchImpl,
+    });
+    await expect(promise).rejects.toMatchObject({ code: "unavailable", httpStatus: 400 });
+    await promise.catch((error: unknown) => {
+      expect(String(error)).toContain("400");
+    });
+  });
+
+  it("still withholds the URL, token, and response body when reporting an HTTP status", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      new Response("top-secret upstream diagnostic", { status: 400 }),
+    );
+    const promise = scanBitcoinAddresses({
+      chain: "btc:mainnet",
+      addresses: [ADDRESS_A],
+      config: { baseUrl: "https://private.example/api", bearerToken: "top-secret" },
+      fetchImpl,
+    });
+    await expect(promise).rejects.toBeInstanceOf(BitcoinProviderError);
+    await promise.catch((error: unknown) => {
+      const text = String(error);
+      expect(text).not.toContain("top-secret");
+      expect(text).not.toContain("private.example");
+      expect(text).not.toContain("upstream diagnostic");
+    });
+  });
+
+  it("omits an HTTP status when the request never produced a response", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => {
+      throw new TypeError("fetch failed");
+    });
+    const promise = scanBitcoinAddresses({
+      chain: "btc:mainnet",
+      addresses: [ADDRESS_A],
+      config: { baseUrl: "https://private.example/api" },
+      fetchImpl,
+    });
+    await expect(promise).rejects.toMatchObject({ code: "unavailable" });
+    await promise.catch((error: unknown) => {
+      expect((error as BitcoinProviderError).httpStatus).toBeUndefined();
     });
   });
 
