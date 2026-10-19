@@ -37,11 +37,9 @@ export const CreateRequest = z.object({
 export type CreateRequest = z.infer<typeof CreateRequest>;
 
 export const ImportRequest = z.object({
-  /** BIP39 mnemonic phrase (space-separated words). */
-  mnemonic: z.string().min(1),
-  /** Encryption password. Never sent back over IPC. */
+  /** Encryption password. Main reads recovery words from the system clipboard. */
   password: z.string().min(1),
-});
+}).strict();
 export type ImportRequest = z.infer<typeof ImportRequest>;
 
 export const UnlockDeriveRequest = z.object({
@@ -69,6 +67,7 @@ export type ChangePasswordRequest = z.infer<typeof ChangePasswordRequest>;
 
 export const DeleteRequest = z.object({
   keyvaultId: z.string().min(1),
+  password: z.string().min(1),
 });
 export type DeleteRequest = z.infer<typeof DeleteRequest>;
 
@@ -81,13 +80,13 @@ export const KEYVAULT_CHANNELS = Object.freeze({
   status: "keyvault:status",
   /** Create a new keyvault (generates mnemonic inside main). */
   create: "keyvault:create",
-  /** Import an existing BIP39 mnemonic into a new keyvault. */
+  /** Import recovery words read and cleared by Electron main from the clipboard. */
   import: "keyvault:import",
   /** Decrypt the keyvault and return derived lock-args / address. */
   unlockDerive: "keyvault:unlock-derive",
   /** Build and sign a CKB transaction inside the vault (security-critical). */
   signTx: "keyvault:sign-tx",
-  /** Export the mnemonic (decrypt and return — shown once, then zeroize). */
+  /** Show recovery words in a native dialog; return status only. */
   export: "keyvault:export",
   /** Re-encrypt the keyvault blob under a new password. */
   changePassword: "keyvault:change-password",
