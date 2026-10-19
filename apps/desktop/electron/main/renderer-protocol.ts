@@ -62,9 +62,12 @@ async function serveRendererRequest(
     return;
   }
   try {
-    const body = await readFile(file);
+    const migrationPage = new URL(url).pathname === "/__storage_migration__";
+    const body = migrationPage
+      ? Buffer.from("<!doctype html><title>ChainPay storage migration</title>")
+      : await readFile(file);
     response.writeHead(200, {
-      "Content-Type": MIME[extname(file)] ?? "application/octet-stream",
+      "Content-Type": migrationPage ? MIME[".html"] : MIME[extname(file)] ?? "application/octet-stream",
       "Content-Security-Policy": csp,
       "Cross-Origin-Embedder-Policy": "require-corp",
       "Cross-Origin-Opener-Policy": "same-origin",

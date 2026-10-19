@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, session, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, session, shell } from "electron";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -36,6 +36,7 @@ import { registerBitcoinIpc } from "./bitcoin-host";
 import { registerSolanaIpc } from "./solana-host";
 import type { CkbNetwork } from "@/lib/light-client/network-configs";
 import { rendererPortForProfile, startRendererServer } from "./renderer-protocol";
+import { migrateLegacyFileStorage } from "./legacy-storage";
 
 const isDev = !app.isPackaged;
 
@@ -130,6 +131,15 @@ function applyResponseHeaders(): void {
 }
 
 async function createWindow(): Promise<void> {
+  const useDevRenderer = isDev && Boolean(process.env.ELECTRON_RENDERER_URL);
+  if (!useDevRenderer) {
+    rendererServer ??= await startRendererServer(
+      join(__dirname, "../renderer"),
+      CSP,
+      rendererPortForProfile(app.getPath("userData")),
+    );
+  }
+
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -178,15 +188,11 @@ async function createWindow(): Promise<void> {
     mainWindow.webContents.openDevTools({ mode: "detach" });
   }
 
-  if (isDev && process.env.ELECTRON_RENDERER_URL) {
+  if (useDevRenderer && process.env.ELECTRON_RENDERER_URL) {
     await mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
   } else {
-    rendererServer ??= await startRendererServer(
-      join(__dirname, "../renderer"),
-      CSP,
-      rendererPortForProfile(app.getPath("userData")),
-    );
-    await mainWindow.loadURL(`${rendererServer.origin}/`);
+    if (app.isPackaged) await migrateLegacyFileStorage(rendererServer!.origin);
+    await mainWindow.loadURL(`${rendererServer!.origin}/`);
   }
 }
 
@@ -320,6 +326,10 @@ app.whenReady().then(async () => {
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) void createWindow();
   });
+}).catch((error: unknown) => {
+  console.error("[startup]", error instanceof Error ? error.name : "unknown error");
+  dialog.showErrorBox("ChainPay could not start", "The desktop data migration or startup failed. Your existing data was left in place. Please retry or contact support before creating new data.");
+  app.quit();
 });
 
 let quitting = false;

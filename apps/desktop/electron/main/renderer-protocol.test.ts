@@ -45,6 +45,9 @@ it("serves the built page and assets with isolation headers from loopback", asyn
     const asset = await fetch(`${server.origin}/assets/app.js`);
     expect(asset.headers.get("content-type")).toContain("javascript");
     expect(await asset.text()).toContain("ready = true");
+    const migration = await fetch(`${server.origin}/__storage_migration__`);
+    expect(migration.status).toBe(200);
+    expect(await migration.text()).toBe("<!doctype html><title>ChainPay storage migration</title>");
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
