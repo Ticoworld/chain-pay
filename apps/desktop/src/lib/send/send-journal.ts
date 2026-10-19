@@ -77,7 +77,7 @@ export function buildConfirmedSendRecord(send: SendRecord): ConfirmedPaymentReco
     label: `Send ${send.id}`,
     chain: send.chain,
     txHash: send.txHash,
-    confirmedAt: send.updatedAt,
+    confirmedAt: send.confirmedAt ?? send.updatedAt,
     lines: send.outputs.map((output) => ({
       payeeId: output.payeeId,
       fiat: { ...output.fiat },

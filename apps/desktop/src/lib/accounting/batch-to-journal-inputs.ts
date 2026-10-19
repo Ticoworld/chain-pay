@@ -79,7 +79,7 @@ export function buildConfirmedPayrollRecord(batch: PayrollBatch): ConfirmedPayme
     label: batch.label,
     chain: "ckb:testnet",
     txHash: batch.pendingTxId as TransactionHash,
-    confirmedAt: batch.updatedAt,
+    confirmedAt: batch.confirmedAt ?? batch.updatedAt,
     lines: batch.lines.map((line) => ({
       payeeId: line.payeeId,
       fiat: { ...line.fiat },

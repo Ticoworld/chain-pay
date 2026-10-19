@@ -82,7 +82,11 @@ interface PayrollBatchesStore {
   markPosted: (batchId: string, jeName: string) => void;
   /** Record a post failure — sets postError and transitions to post_failed. */
   markPostFailed: (batchId: string, error: string) => void;
+  recoverInterruptedPostings: () => void;
 }
+
+export const INTERRUPTED_PAYROLL_POST_ERROR =
+  "Accounting post was interrupted before ChainPay received the result. Retry accounting to check the existing source record and Journal Entry.";
 
 // PayrollBatch holds bigints inside `lines[i].fiat.minor`, `lines[i].crypto.value`,
 // and `lines[i].feeAllocated.value`. Same suffix-tagged JSON pattern as the
@@ -129,9 +133,12 @@ export const usePayrollBatchesStore = create<PayrollBatchesStore>()(
         const current = get().batches.find((b) => b.id === id);
         if (!current) throw new Error(`batch not found: ${id}`);
         assertCanTransition(current.state, to);
+        const updatedAt = new Date().toISOString();
         set((s) => ({
           batches: s.batches.map((b) =>
-            b.id === id ? { ...b, state: to, updatedAt: new Date().toISOString() } : b,
+            b.id === id
+              ? { ...b, state: to, updatedAt, ...(to === "confirmed" ? { confirmedAt: updatedAt } : {}) }
+              : b,
           ),
         }));
       },
@@ -323,7 +330,12 @@ export const usePayrollBatchesStore = create<PayrollBatchesStore>()(
             if (b.kind !== "payroll") return b;
             assertCanTransition(b.state, "posting");
             const { postError: _drop, ...rest } = b;
-            return { ...rest, state: "posting" as PayrollBatchState, updatedAt: new Date().toISOString() };
+            return {
+              ...rest,
+              confirmedAt: b.confirmedAt ?? b.updatedAt,
+              state: "posting" as PayrollBatchState,
+              updatedAt: new Date().toISOString(),
+            };
           }),
         }));
       },
@@ -347,6 +359,19 @@ export const usePayrollBatchesStore = create<PayrollBatchesStore>()(
           }),
         }));
       },
+      recoverInterruptedPostings: () =>
+        set((state) => ({
+          batches: state.batches.map((batch) =>
+            batch.kind === "payroll" && batch.state === "posting"
+              ? {
+                  ...batch,
+                  state: "post_failed" as const,
+                  postError: INTERRUPTED_PAYROLL_POST_ERROR,
+                  updatedAt: new Date().toISOString(),
+                }
+              : batch,
+          ),
+        })),
     }),
     {
       name: "chain-pay:payroll-batches",
@@ -378,6 +403,7 @@ export const usePayrollBatchesStore = create<PayrollBatchesStore>()(
         }
         return { batches: incoming as unknown as AnyBatch[] };
       },
+      onRehydrateStorage: () => (state) => state?.recoverInterruptedPostings(),
     },
   ),
 );
