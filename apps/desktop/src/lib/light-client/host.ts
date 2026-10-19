@@ -27,6 +27,7 @@ import {
 import { deleteIndexedDbDatabase, rescanLock } from "./rescan-lock";
 import { reconcileLiveCells } from "./reconcile-live-cells";
 import type { PaymentObservationReader } from "@/lib/chains/ckb/observe-payment";
+import { cacheObservationReader } from "@/lib/chains/ckb/observation-reader";
 
 export interface SyncSnapshot {
   network: CkbNetwork;
@@ -60,6 +61,8 @@ export class LightClientHost {
   private errorListeners = new Set<ErrorListener>();
   private lastSnapshot: SyncSnapshot | null = null;
   private observationQueries = new Set<() => void>();
+  private observationReader: PaymentObservationReader | null = null;
+  private sessionListeners = new Set<() => void>();
   /**
    * Optional full-node JSON-RPC URL. When non-empty, transactions are
    * broadcast through it instead of the embedded light client's relay
@@ -116,6 +119,7 @@ export class LightClientHost {
     this.client = client;
     this.network = network;
     this.startedAt = Date.now();
+    for (const listener of this.sessionListeners) listener();
     this.startPolling();
   }
 
@@ -126,6 +130,8 @@ export class LightClientHost {
     this.client = null;
     this.network = null;
     this.lastSnapshot = null;
+    this.observationReader = null;
+    for (const listener of this.sessionListeners) listener();
     for (const cancel of this.observationQueries) cancel();
     this.observationQueries.clear();
     try {
@@ -158,6 +164,11 @@ export class LightClientHost {
     return () => this.errorListeners.delete(listener);
   }
 
+  onSessionChange(listener: () => void): () => void {
+    this.sessionListeners.add(listener);
+    return () => this.sessionListeners.delete(listener);
+  }
+
   async getTipHeader() {
     return this.requireClient().getTipHeader();
   }
@@ -167,9 +178,10 @@ export class LightClientHost {
   }
 
   paymentObservationReader(): PaymentObservationReader {
+    if (this.observationReader) return this.observationReader;
     const client = this.requireClient();
     const network = this.network;
-    return {
+    this.observationReader = cacheObservationReader({
       currentNetwork: () => this.client === client ? network : null,
       getTipHeader: () => this.queryObservation(client, () => client.getTipHeader()),
       getPeers: () => this.queryObservation(client, () => client.getPeers()),
@@ -177,7 +189,8 @@ export class LightClientHost {
       fetchTransaction: (hash) => this.queryObservation(client, () => client.fetchTransaction(hash)),
       getHeader: (hash) => this.queryObservation(client, () => client.getHeader(hash)),
       fetchHeader: (hash) => this.queryObservation(client, () => client.fetchHeader(hash)),
-    };
+    });
+    return this.observationReader;
   }
 
   private queryObservation<Value>(client: LightClient, query: () => Promise<Value>): Promise<Value> {

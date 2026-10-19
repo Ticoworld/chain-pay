@@ -22,6 +22,8 @@ describe("session-bound observation reader", () => {
       client.getTransaction.mockImplementationOnce(() => new Promise<undefined>(() => undefined));
       const read = host.paymentObservationReader().getTransaction("0x1234")
         .then(() => "completed", () => "interrupted");
+      await Promise.resolve();
+      expect(client.getTransaction).toHaveBeenCalledWith("0x1234");
       await host.stop();
       expect(await Promise.race([
         read, new Promise((resolve) => setTimeout(() => resolve("still pending"), 30)),
@@ -39,14 +41,21 @@ describe("session-bound observation reader", () => {
     try {
       await host.start("testnet");
       const reader = host.paymentObservationReader();
+      expect(host.paymentObservationReader()).toBe(reader);
+      const changed = vi.fn();
+      const unsubscribe = host.onSessionChange(changed);
       expect(reader.currentNetwork()).toBe("testnet");
       await reader.fetchTransaction("0x1234");
       expect(client.fetchTransaction).toHaveBeenCalledWith("0x1234");
       await host.stop();
+      expect(changed).toHaveBeenCalledTimes(1);
       expect(reader.currentNetwork()).toBeNull();
       await host.start("testnet");
+      expect(changed).toHaveBeenCalledTimes(2);
       expect(reader.currentNetwork()).toBeNull();
       expect(host.paymentObservationReader().currentNetwork()).toBe("testnet");
+      expect(host.paymentObservationReader()).not.toBe(reader);
+      unsubscribe();
     } finally {
       await host.stop();
       Object.assign(globalThis, { window: previousWindow });

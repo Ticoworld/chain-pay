@@ -47,6 +47,11 @@ Detailed roadmap: [docs/mvp-roadmap.md](docs/mvp-roadmap.md). Phase-specific not
 
 ### What's actually working
 
+Send history also offers [read-only CKB payment observations](docs/ckb-payment-observation.md):
+check recent inclusion through the embedded client, with earlier observations
+kept separate when current evidence is unavailable. This does not confirm a
+payment or trigger accounting; transport connectivity remains unverified.
+
 | Capability | Where | Evidence |
 |---|---|---|
 | Embedded CKB light client on mainnet | renderer-side WASM, `src/lib/light-client/` | Tip block + peers update live; no third-party RPC required |

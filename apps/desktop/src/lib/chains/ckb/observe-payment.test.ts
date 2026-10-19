@@ -90,12 +90,13 @@ describe("read-only local CKB payment observation", () => {
     expect(reader.getTransaction).not.toHaveBeenCalled();
   });
 
-  it("withholds depth with no peers, and after peer loss during lookup", async () => {
+  it("does not infer connectivity from either cached peers or an empty peer list", async () => {
     const { reader, observe } = fixture();
     reader.getPeers.mockResolvedValue([]);
-    expect(await observe()).toMatchObject({ state: "uncertain" });
-    reader.getPeers.mockResolvedValueOnce([{}]);
-    expect(await observe()).toMatchObject({ state: "uncertain", reason: expect.stringMatching(/disconnected/) });
+    expect(await observe()).toMatchObject({ state: "included" });
+    reader.getPeers.mockResolvedValue([{}]);
+    expect(await observe()).toMatchObject({ state: "included" });
+    expect(reader.getPeers).not.toHaveBeenCalled();
   });
 
   it("queues a missing parent header without inventing its ancestry", async () => {
@@ -156,9 +157,9 @@ describe("read-only local CKB payment observation", () => {
   it("discards an otherwise good sample that became stale during lookup", async () => {
     const { reader } = fixture();
     let clock = NOW;
-    reader.getPeers.mockImplementationOnce(async () => [{}]).mockImplementation(async () => {
+    reader.getTransaction.mockImplementationOnce(async () => included()).mockImplementation(async () => {
       clock += 300_001;
-      return [{}];
+      return included();
     });
     expect(await observePayment(reader, "ckb:testnet", TX, () => clock))
       .toMatchObject({ state: "uncertain", reason: expect.stringMatching(/stale/) });
@@ -168,5 +169,18 @@ describe("read-only local CKB payment observation", () => {
     const { reader } = fixture();
     expect(await observePayment(reader, "ckb:testnet", "0x1234", () => NOW)).toMatchObject({ state: "uncertain" });
     expect(reader.getTipHeader).not.toHaveBeenCalled();
+  });
+
+  it("reuses only a validated tip/block pair and still checks mutable transaction evidence", async () => {
+    const { reader, observe } = fixture();
+    expect(await observe()).toMatchObject({ state: "included" });
+    reader.getHeader.mockClear();
+    expect(await observe()).toMatchObject({ state: "included" });
+    expect(reader.getHeader).toHaveBeenCalledTimes(1);
+    reader.getTransaction.mockResolvedValue(undefined);
+    expect(await observe()).toMatchObject({ state: "uncertain" });
+    reader.getTransaction.mockResolvedValue(included());
+    reader.getTipHeader.mockResolvedValue(header(102, 1000));
+    expect(await observe()).toMatchObject({ state: "uncertain" });
   });
 });

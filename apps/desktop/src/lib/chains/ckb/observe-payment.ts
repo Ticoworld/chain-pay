@@ -46,6 +46,7 @@ const isHash = (value: string): value is `0x${string}` => /^0x[\da-f]{64}$/i.tes
 const sameHash = (left: string, right: string) => left.toLowerCase() === right.toLowerCase();
 const validHeader = (header: Header) =>
   isHash(header.hash) && isHash(header.parentHash) && header.number >= 0n;
+const validatedAncestry = new WeakMap<PaymentObservationReader, Set<string>>();
 
 export async function observePayment(
   reader: PaymentObservationReader,
@@ -61,10 +62,9 @@ export async function observePayment(
   }
   try {
     const tip = await reader.getTipHeader();
-    const peers = await reader.getPeers();
     const tipAge = BigInt(now()) - tip.timestamp;
-    if (!validHeader(tip) || tipAge > MAX_TIP_AGE_MS || tipAge < -MAX_FUTURE_MS || !peers.length) {
-      return uncertain("The local tip is stale, unavailable or has no connected peers.");
+    if (!validHeader(tip) || tipAge > MAX_TIP_AGE_MS || tipAge < -MAX_FUTURE_MS) {
+      return uncertain("The local tip is stale or unavailable; current ancestry cannot be checked.");
     }
     let transaction = await reader.getTransaction(txHash);
     if (!transaction) {
@@ -107,21 +107,26 @@ async function checkInclusion(
   const distance = tip.number - block.number;
   if (distance < 0n) return uncertain("The reported inclusion is ahead of the sampled local tip.");
   if (distance > MAX_ANCESTRY_LINKS) {
-    return uncertain("Inclusion was reported, but checking current ancestry exceeds the 64-block prototype limit.");
+    return uncertain("Inclusion was reported, but checking current ancestry exceeds the 64-block limit.");
   }
-  const ancestryError = await ancestryProblem(reader, tip, block);
+  const ancestryKey = `${tip.hash.toLowerCase()}:${block.hash.toLowerCase()}`;
+  const validated = validatedAncestry.get(reader) ?? new Set<string>();
+  validatedAncestry.set(reader, validated);
+  const ancestryError = validated.has(ancestryKey) ? null : await ancestryProblem(reader, tip, block);
   if (ancestryError) return uncertain(ancestryError);
+  validated.add(ancestryKey);
+  if (validated.size > 64) validated.delete(validated.values().next().value!);
   const tipAfter = await reader.getTipHeader();
   const transactionAfter = await reader.getTransaction(txHash);
-  const peersAfter = await reader.getPeers();
   if (`ckb:${reader.currentNetwork()}` !== chain || !sameHash(tip.hash, tipAfter.hash) ||
       !transactionAfter || transactionAfter.status !== "committed" ||
       !sameHash(transactionAfter.transaction.hash(), txHash) ||
       !transactionAfter.blockHash || !sameHash(transactionAfter.blockHash, block.hash)) {
     return uncertain("The light-client session, tip or transaction changed during the check.");
   }
-  if (BigInt(now()) - tip.timestamp > MAX_TIP_AGE_MS || !peersAfter.length) {
-    return uncertain("The tip became stale or peers disconnected during the check.");
+  const tipAge = BigInt(now()) - tip.timestamp;
+  if (tipAge > MAX_TIP_AGE_MS || tipAge < -MAX_FUTURE_MS) {
+    return uncertain("The local tip became stale or the clock changed during the check.");
   }
   return {
     state: "included", blockHash: block.hash, blockNumber: block.number,
