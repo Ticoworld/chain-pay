@@ -124,6 +124,15 @@ describe("PayrollBatch state machine", () => {
       expect(canTransition("broadcast_countdown", "approved")).toBe(true);
     });
 
+    it("allows broadcast_countdown → broadcast_failed (onElapsed pre-check failure)", () => {
+      // BUG 4 fix: onElapsed's three pre-checks (missing broadcastRpcUrl, no
+      // txBytes, no partialSigs) call markBroadcastFailed while the batch is
+      // still in broadcast_countdown. Before this transition was legal, the
+      // store's canTransition guard silently discarded the call — no state
+      // change, no broadcastError, no Retry button. See PayPanel.comm.test.tsx.
+      expect(canTransition("broadcast_countdown", "broadcast_failed")).toBe(true);
+    });
+
     it("allows broadcast_initiating → broadcasted", () => {
       expect(canTransition("broadcast_initiating", "broadcasted")).toBe(true);
     });
@@ -132,12 +141,12 @@ describe("PayrollBatch state machine", () => {
       expect(canTransition("broadcast_initiating", "broadcast_failed")).toBe(true);
     });
 
-    it("allows broadcast_failed → approved (retryAutoBroadcast)", () => {
-      expect(canTransition("broadcast_failed", "approved")).toBe(true);
+    it("allows broadcast_failed → broadcast_countdown (retryAutoBroadcast)", () => {
+      expect(canTransition("broadcast_failed", "broadcast_countdown")).toBe(true);
     });
 
-    it("disallows broadcast_failed → broadcast_countdown directly", () => {
-      expect(canTransition("broadcast_failed", "broadcast_countdown")).toBe(false);
+    it("keeps broadcast_failed → approved available for manual recovery", () => {
+      expect(canTransition("broadcast_failed", "approved")).toBe(true);
     });
 
     it("disallows broadcasted reverts (terminal-ish, same as before)", () => {

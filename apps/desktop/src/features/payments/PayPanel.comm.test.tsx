@@ -237,12 +237,11 @@ describe("PayPanel — incoming-sigs drain", () => {
     expect(batch.state).toBe("calculated");
   });
 
-  it("BUG PIN: a drained signature never reaches the signature textareas", async () => {
-    // The drain writes to batch.partialSigs, but PayPanel's `sigs` React state
-    // is only ever seeded by handleBuild (empty) or the resume effect. Nothing
-    // syncs state ← store, so a comm-arrived signature is invisible in the
-    // SignaturePanel until the operator resumes the draft, and Broadcast stays
-    // disabled even though M sigs are collected.
+  it("a drained signature reaches the signature textareas and unlocks Merge & broadcast (previously BUG PIN)", async () => {
+    // FIXED (was BUG PIN): the drain wrote to batch.partialSigs, but nothing
+    // synced PayPanel's `sigs` React state — the drain effect now calls
+    // lifecycle.setSigs after a merge, reconciling each persisted slot back
+    // into the row the SignaturePanel textareas and the M-of-N gate read.
     bufferSig(0, SIG_A);
     bufferSig(1, SIG_B);
     await buildPayeeBatch();
@@ -251,8 +250,62 @@ describe("PayPanel — incoming-sigs drain", () => {
       const batch = usePayrollBatchesStore.getState().batches[0] as PayrollBatch;
       expect(batch.partialSigs).toHaveLength(2);
     });
-    expect(sigBoxes().map((b) => (b as HTMLTextAreaElement).value)).toEqual(["", ""]);
-    expect(screen.getByRole("button", { name: /Merge & broadcast/ })).toBeDisabled();
+    await waitFor(() => {
+      expect(sigBoxes().map((b) => (b as HTMLTextAreaElement).value)).toEqual([SIG_A, SIG_B]);
+    });
+    expect(screen.getByRole("button", { name: /Merge & broadcast/ })).toBeEnabled();
+  });
+
+  it("does not overwrite an operator-typed signature when a later drain touches the same slot", async () => {
+    // Proves the reconciliation added for the fix above cannot reopen the
+    // "never clobber operator input" guarantee that drainIncomingSigsInto
+    // already provides at the store layer (its `existingSlots` check). A
+    // comm signature arriving for a slot the operator already filled must
+    // leave that slot's textarea untouched; a genuine signature for a
+    // still-empty slot must still come through.
+    await buildPayeeBatch();
+
+    const operatorSig = `0x${"99".repeat(65)}`;
+    fireEvent.change(sigBoxes()[0]!, { target: { value: operatorSig } });
+    await waitFor(() => {
+      const batch = usePayrollBatchesStore.getState().batches[0] as PayrollBatch;
+      expect(batch.partialSigs?.find((p) => p.slotIndex === 0)?.signature).toBe(operatorSig);
+    });
+
+    // A comm signature for the SAME slot the operator just filled — SIG_A is
+    // genuinely valid for slot 0 (recovers to HASH_A, pubkeyHashes[0]), so
+    // only the `existingSlots` occupied-slot check can reject it; a
+    // signature from the wrong key would be rejected by pubkey-mismatch
+    // instead and prove nothing about the occupied-slot guard specifically.
+    // Plus a genuine signature for the still-empty slot.
+    bufferSig(0, SIG_A);
+    bufferSig(1, SIG_B);
+
+    // Nudge the drain effect to re-run: any write to the batches store gives
+    // PayPanel a fresh `batchStore` reference, which is exactly what a
+    // second comm delivery does in the running app. This mirrors that
+    // without touching the sig rows themselves.
+    act(() => {
+      const id = usePayrollBatchesStore.getState().batches[0]!.id;
+      usePayrollBatchesStore.getState().updateBatch(id, {});
+    });
+
+    await waitFor(() => {
+      expect((sigBoxes()[1] as HTMLTextAreaElement).value).toBe(SIG_B);
+    });
+    // Slot 0 is exactly what the operator typed — the rejected, otherwise-
+    // valid SIG_A never reached the textarea or the store.
+    expect((sigBoxes()[0] as HTMLTextAreaElement).value).toBe(operatorSig);
+    const batch = usePayrollBatchesStore.getState().batches[0] as PayrollBatch;
+    expect(batch.partialSigs?.find((p) => p.slotIndex === 0)?.signature).toBe(operatorSig);
+    // Array.find returns the FIRST match, so if drainIncomingSigsInto's
+    // existingSlots guard were ever dropped, a second (accepted) entry for
+    // slot 0 would be appended alongside the operator's — masked by the
+    // .find() above, which would keep reporting the operator's value
+    // regardless. Asserting the exact length closes that blind spot: there
+    // must be exactly the operator's slot-0 entry and the drain's slot-1
+    // entry, no silently-appended duplicate.
+    expect(batch.partialSigs).toHaveLength(2);
   });
 
   it("leaves the buffer untouched for a manual payment with no active batch", async () => {
@@ -271,6 +324,14 @@ describe("PayPanel — incoming-sigs drain", () => {
 // ---------------------------------------------------------------------------
 
 describe("PayPanel — auto-broadcast", () => {
+  it("does not offer a second manual broadcast while the countdown is armed", () => {
+    const batch = countdownBatch();
+    usePayrollBatchesStore.setState({ batches: [batch], selectedDraftId: batch.id });
+    renderPanel();
+    expect(screen.getByText(/Broadcasting in/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Merge & broadcast" })).not.toBeInTheDocument();
+  });
+
   /** Resume a countdown batch and let the 5s countdown elapse. */
   async function elapseCountdown(batch: PayrollBatch): Promise<void> {
     usePayrollBatchesStore.setState({ batches: [batch], selectedDraftId: batch.id });
@@ -344,20 +405,20 @@ describe("PayPanel — auto-broadcast", () => {
     expect(after.partialSigs).toHaveLength(2);
   });
 
-  it("BUG PIN: a missing broadcast RPC URL wedges the batch in broadcast_countdown with no error", async () => {
-    // onElapsed's three pre-checks call markBroadcastFailed while the batch is
-    // STILL in `broadcast_countdown`, but the state machine only allows
-    // broadcast_countdown → {broadcast_initiating, approved, cancelled}.
-    // markBroadcastFailed no-ops on an illegal transition (`if
-    // (!canTransition(...)) return b`), so nothing is recorded at all: no
-    // state change, no broadcastError, no Retry button. The countdown has
-    // already set its firedRef, so it never fires again either — the batch is
-    // stuck showing "Broadcasting in 0…" forever.
-    //
-    // The source comment says these checks exist "so the user sees a clear
-    // error instead of a silent failure"; the code does the opposite. The
-    // post-markBroadcastInitiating catch block is unaffected (see the drift
-    // test above) because broadcast_initiating → broadcast_failed IS legal.
+  it("a missing broadcast RPC URL surfaces an error and reaches broadcast_failed", async () => {
+    // FIXED (was BUG PIN): onElapsed's three pre-checks call
+    // markBroadcastFailed while the batch is STILL in `broadcast_countdown`.
+    // Before Task A of the auto-broadcast bug bundle, the state machine only
+    // allowed broadcast_countdown → {broadcast_initiating, approved,
+    // cancelled}, so markBroadcastFailed no-op'd on the illegal transition
+    // (`if (!canTransition(...)) return b`) — no state change, no
+    // broadcastError, no Retry button, and the countdown's firedRef meant it
+    // never fired again either. The batch sat stuck showing "Broadcasting in
+    // 0…" forever. state-machine.ts now allows broadcast_countdown →
+    // broadcast_failed, so this pre-check reaches the user for the first
+    // time. The post-markBroadcastInitiating catch block was always fine
+    // (see the drift test above) because broadcast_initiating →
+    // broadcast_failed was already legal.
     //
     // primeStores leaves broadcastRpcUrl empty on purpose here.
     await elapseCountdown(countdownBatch());
@@ -365,22 +426,100 @@ describe("PayPanel — auto-broadcast", () => {
     expect(assertGuardSpy).not.toHaveBeenCalled();
     expect(broadcastTransaction).not.toHaveBeenCalled();
     const after = usePayrollBatchesStore.getState().batches[0] as PayrollBatch;
-    expect(after.state).toBe("broadcast_countdown");
-    expect(after.broadcastError).toBeUndefined();
-    expect(screen.queryByText("Broadcast failed")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Retry broadcast" })).not.toBeInTheDocument();
-    expect(screen.getByText(/Broadcasting in 0/)).toBeInTheDocument();
+    expect(after.state).toBe("broadcast_failed");
+    expect(after.broadcastError).toBe("Configure broadcast RPC URL in Settings");
+    expect(screen.getByText("Broadcast failed")).toBeInTheDocument();
+    expect(screen.getByText("Configure broadcast RPC URL in Settings")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry broadcast" })).toBeInTheDocument();
+    expect(screen.queryByText(/Broadcasting in/)).not.toBeInTheDocument();
   });
 
-  it("BUG PIN: a batch with no collected signatures wedges the same way", async () => {
+  it("retries a failed auto broadcast after the operator configures the RPC URL", async () => {
+    await elapseCountdown(countdownBatch());
+    expect(usePayrollBatchesStore.getState().batches[0]?.state).toBe("broadcast_failed");
+
+    useNetworkConfigStore.setState({ network: "testnet", broadcastRpcUrl: "http://node:8114" });
+    fireEvent.click(screen.getByRole("button", { name: "Retry broadcast" }));
+    expect(usePayrollBatchesStore.getState().batches[0]?.state).toBe("broadcast_countdown");
+    expect(screen.getByText(/Broadcasting in/)).toBeInTheDocument();
+
+    for (let tick = 0; tick <= 5; tick += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+    }
+
+    expect(broadcastTransaction).toHaveBeenCalledTimes(1);
+    expect(usePayrollBatchesStore.getState().batches[0]?.state).toBe("broadcasted");
+  });
+
+  it("a batch with no collected signatures surfaces an error and reaches broadcast_failed", async () => {
+    // FIXED (was BUG PIN): same defect as the missing-RPC-URL case above, hit
+    // via the third onElapsed pre-check instead of the first. Not "another"
+    // bug — it is the identical broadcast_countdown → broadcast_failed
+    // transition, exercised through a different guard clause, so it flips to
+    // asserting fixed behaviour in the same commit as that test.
     useNetworkConfigStore.setState({ network: "testnet", broadcastRpcUrl: "http://node:8114" });
     await elapseCountdown(countdownBatch({ partialSigs: [] }));
 
     expect(assertGuardSpy).not.toHaveBeenCalled();
     expect(broadcastTransaction).not.toHaveBeenCalled();
     const after = usePayrollBatchesStore.getState().batches[0] as PayrollBatch;
-    expect(after.state).toBe("broadcast_countdown");
-    expect(after.broadcastError).toBeUndefined();
+    expect(after.state).toBe("broadcast_failed");
+    expect(after.broadcastError).toBe(
+      "No partial signatures collected yet — collect signatures, then retry the broadcast",
+    );
+    expect(screen.getByText("Broadcast failed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry broadcast" })).toBeInTheDocument();
+  });
+
+  it("a batch with no transaction bytes surfaces an error and reaches broadcast_failed", async () => {
+    // FIXED (was BUG PIN): same defect as the missing-RPC-URL and
+    // no-collected-signatures cases above, hit via the second onElapsed
+    // pre-check (Task A's third armed guard) instead of the first or third.
+    // Not "another" bug — it is the identical broadcast_countdown →
+    // broadcast_failed transition, exercised through the !txBytes guard
+    // clause. Task A also reworded this branch's message (step A5), so
+    // neither the branch nor the new string had coverage before this test.
+    //
+    // Can't reuse elapseCountdown()/countdownBatch() as-is: it drives
+    // activeBatchId via `selectedDraftId`, whose resume-hydration effect
+    // (PayPanel.tsx) itself bails out — and never sets activeBatchId — when
+    // `batch.txBytes` is missing, so the countdown UI would never mount and
+    // the very guard under test would stay unreached. Instead, set
+    // activeBatchId directly via the `autoSelectBatchId` router-state path
+    // (the same one ReviewInvoiceForm uses), which only needs the batch id
+    // to exist in the store — no txBytes required to reach the countdown.
+    useNetworkConfigStore.setState({ network: "testnet", broadcastRpcUrl: "http://node:8114" });
+    // `Partial<PayrollBatch>` overrides can't carry `txBytes: undefined`
+    // under `exactOptionalPropertyTypes` (the property must be absent, not
+    // present-and-undefined) — strip it via destructuring instead.
+    const { txBytes: _txBytes, ...batch } = countdownBatch();
+    usePayrollBatchesStore.setState({
+      batches: [batch as PayrollBatch],
+      selectedDraftId: null,
+    });
+    vi.useFakeTimers();
+    renderPanel([{ pathname: "/pay", state: { autoSelectBatchId: batch.id } }]);
+    expect(screen.getByText(/Broadcasting in/)).toBeInTheDocument();
+    // One act() per second: AutoBroadcastCountdown chains its setTimeout from
+    // an effect, so the next timer is only registered once React commits the
+    // previous tick.
+    for (let tick = 0; tick <= 5; tick += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+    }
+
+    expect(assertGuardSpy).not.toHaveBeenCalled();
+    expect(broadcastTransaction).not.toHaveBeenCalled();
+    const after = usePayrollBatchesStore.getState().batches[0] as PayrollBatch;
+    expect(after.state).toBe("broadcast_failed");
+    expect(after.broadcastError).toBe(
+      "No transaction bytes in batch — this draft can't be resumed; start a new payment",
+    );
+    expect(screen.getByText("Broadcast failed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry broadcast" })).toBeInTheDocument();
   });
 
   it("cancelling the countdown returns the batch to approved without broadcasting", async () => {

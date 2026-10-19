@@ -16,7 +16,7 @@ import {
   assertMultisigBytesMatchTreasury,
   dumpInputsForInspection,
 } from "@/lib/chains/ckb/multisig-assert";
-import { SHANNONS_PER_CKB, ckbToShannons, toCkbInputValue } from "@/lib/chains/ckb/units";
+import { ckbToShannons, toCkbInputValue } from "@/lib/chains/ckb/units";
 import { lockFromAddress } from "@/lib/chains/ckb/address-lock";
 import {
   buildPaymentSkeleton,
@@ -42,7 +42,6 @@ import {
 } from "./payment-draft";
 import { usePayeesStore } from "@/stores/payees";
 import { usePayrollBatchesStore } from "@/stores/payroll-batches";
-import { useNetworkConfigStore } from "@/stores/network-config";
 import { useIncomingSigsStore } from "@/stores/incoming-sigs";
 import type { TransferPacket } from "@chain-pay/shared";
 import type { OutgoingPacket } from "@/lib/comm/types";
@@ -57,6 +56,7 @@ import { DraftForm } from "./DraftForm";
 import { PacketPanel } from "./PacketPanel";
 import { SignaturePanel } from "./SignaturePanel";
 import { BroadcastResult } from "./BroadcastResult";
+import { useAutoBroadcast } from "./hooks/useAutoBroadcast";
 import { useFxSnapshot } from "./hooks/useFxSnapshot";
 import { usePaymentDraft } from "./hooks/usePaymentDraft";
 import { usePaymentLifecycle } from "./hooks/usePaymentLifecycle";
@@ -99,9 +99,7 @@ export function PayPanel() {
       const payee = payees.find((p) => p.id === line.payeeId);
       const row: RecipientRow = {
         address: payee?.walletAddress ?? "",
-        amountCkb: line.crypto.value > 0n
-          ? (Number(line.crypto.value) / Number(SHANNONS_PER_CKB)).toString()
-          : "",
+        amountCkb: line.crypto.value > 0n ? toCkbInputValue(line.crypto.value) : "",
         payeeId: line.payeeId,
       };
       if (line.fxRate && line.fxRate !== "0") row.fxRate = line.fxRate;
@@ -131,10 +129,46 @@ export function PayPanel() {
     if (!activeBatch?.sighashDigest || !multisig) return;
     const buffered = useIncomingSigsStore.getState().peek(activeBatch.sighashDigest);
     if (buffered.length === 0) return;
-    batchStore.drainIncomingSigsInto(activeBatch.id, {
+    const { merged } = batchStore.drainIncomingSigsInto(activeBatch.id, {
       m: multisig.m,
       pubkeyHashes: multisig.pubkeyHashes,
     });
+    if (merged === 0) return;
+    // Reflect what the drain just merged into the batch's partialSigs back
+    // into the `sigs` React state SignaturePanel renders and the M-of-N gate
+    // reads. drainIncomingSigsInto already refuses to overwrite a slot
+    // already present in partialSigs (`existingSlots`), so this can never
+    // clobber an operator-typed signature — it only fills in what the drain
+    // just accepted. Read fresh from the store rather than off `activeBatch`,
+    // since the drain call above just mutated it. Uses lifecycle.setSigs
+    // directly, NOT updateSigs: updateSigs writes straight back into the
+    // store's partialSigs on every call, and looping that write through the
+    // very state this effect reacts to risks a feedback loop.
+    const updated = usePayrollBatchesStore.getState().findById(activeBatch.id);
+    const partials = updated?.partialSigs ?? [];
+    // `prev.map` only fills rows that already exist in `sigs` — it cannot
+    // create a row for a slot `sigs` doesn't have yet. That's safe only
+    // because a merge can never land while `sigs` is empty for a batch that
+    // has this effect live: handleBuild seeds all `cfg.m` rows into `sigs`
+    // in the same commit that sets `activeBatchId` (and the resume effect
+    // does the same via `restoredSigs`), so by the time `activeBatch` is
+    // non-null here, `sigs` already has one row per slot. If a future path
+    // ever sets `activeBatchId` without seeding `sigs` first, a merge landing
+    // in that window would be silently dropped with no later re-sync.
+    lifecycle.setSigs((prev) =>
+      prev.map((row) => {
+        const found = partials.find((p) => p.slotIndex === row.slotIndex);
+        return found ? { ...row, signature: found.signature } : row;
+      }),
+    );
+    // `lifecycle` is a freshly-allocated object every render (same reasoning
+    // as the resume effect below), so it deliberately stays out of the
+    // dependency array — including it would re-run this effect on every
+    // render. Safe without it: the drain itself is idempotent (the
+    // `buffered.length === 0` guard above short-circuits once the buffer is
+    // empty) and lifecycle.setSigs never changes activeBatch, multisig or
+    // batchStore, so it cannot re-trigger this effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeBatch?.id, activeBatch?.sighashDigest, multisig, batchStore]);
   const cfg = useMemo<CkbMultisigConfig | null>(() => {
     if (!multisig) return null;
@@ -352,6 +386,19 @@ export function PayPanel() {
     return lightClient().broadcastTransaction(tx);
   }
 
+  // The auto-broadcast countdown's elapsed handler. `buildSignedTxAndBroadcast`
+  // is handed in rather than reimplemented so the auto path runs the *same*
+  // pre-broadcast multisig guard as the manual button above.
+  const onAutoBroadcastElapsed = useAutoBroadcast({
+    batch: activeBatch,
+    batchStore,
+    broadcast: buildSignedTxAndBroadcast,
+    onBroadcasted: (txHash) => {
+      lifecycle.setBroadcastedTxHash(txHash);
+      lifecycle.setPhase("broadcasted");
+    },
+  });
+
   const handleBroadcast = async () => {
     if (!cfg || !lifecycle.skeleton) return;
     setError(null);
@@ -567,7 +614,10 @@ export function PayPanel() {
         />
       ) : null}
 
-      {(lifecycle.phase === "packet-ready" || lifecycle.phase === "broadcast-ready") && cfg && multisig ? (
+      {(lifecycle.phase === "packet-ready" || lifecycle.phase === "broadcast-ready") &&
+      activeBatch?.state !== "broadcast_countdown" &&
+      activeBatch?.state !== "broadcast_initiating" &&
+      cfg && multisig ? (
         <SignaturePanel
           cfg={cfg}
           sigs={lifecycle.sigs}
@@ -612,51 +662,7 @@ export function PayPanel() {
       {/* Auto-broadcast countdown — fires when store transitions to broadcast_countdown. */}
       {activeBatch && activeBatch.state === "broadcast_countdown" ? (
         <AutoBroadcastCountdown
-          onElapsed={async () => {
-            // Guard: a broadcast RPC URL must be configured (or light-client
-            // broadcast must be viable). Check before marking initiating so
-            // the user sees a clear error instead of a silent failure.
-            const { broadcastRpcUrl } = useNetworkConfigStore.getState();
-            if (!broadcastRpcUrl) {
-              batchStore.markBroadcastFailed(
-                activeBatch.id,
-                "Configure broadcast RPC URL in Settings",
-              );
-              return;
-            }
-            // Reconstruct the tx from the persisted bytes so this path is
-            // independent of React state (skeleton may be null if the user
-            // navigated away and back).
-            if (!activeBatch.txBytes) {
-              batchStore.markBroadcastFailed(activeBatch.id, "No transaction bytes in batch");
-              return;
-            }
-            if (!activeBatch.partialSigs || activeBatch.partialSigs.length === 0) {
-              batchStore.markBroadcastFailed(activeBatch.id, "No partial signatures collected yet");
-              return;
-            }
-            batchStore.markBroadcastInitiating(activeBatch.id);
-            try {
-              const tx = Transaction.fromBytes(bytesFrom(activeBatch.txBytes));
-              const partials: PartialSignature[] = activeBatch.partialSigs.map((p) => ({
-                slotIndex: p.slotIndex,
-                signature: p.signature,
-              }));
-              // buildSignedTxAndBroadcast merges sigs into tx, runs sanity
-              // checks, then broadcasts — same path as manual handleBroadcast.
-              const txHash = await buildSignedTxAndBroadcast(tx, partials);
-              lifecycle.setBroadcastedTxHash(txHash);
-              lifecycle.setPhase("broadcasted");
-              batchStore.transition(activeBatch.id, "broadcasted");
-              batchStore.updateBatch(activeBatch.id, {
-                pendingTxId: txHash,
-                partialSigs: [],
-              });
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : String(err);
-              batchStore.markBroadcastFailed(activeBatch.id, msg);
-            }
-          }}
+          onElapsed={onAutoBroadcastElapsed}
           onCancel={() => batchStore.cancelAutoBroadcast(activeBatch.id)}
         />
       ) : null}

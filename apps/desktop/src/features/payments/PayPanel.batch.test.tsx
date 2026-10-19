@@ -72,7 +72,6 @@ import {
   broadcastButton,
   buildButton,
   buildOnce,
-  captureUnhandledRejections,
   CFG_B,
   currentSkeletonTx,
   DIGEST,
@@ -216,6 +215,46 @@ describe("PayPanel — hydration from a persisted batch", () => {
     await waitFor(() => expect(fetchCkbPrices).toHaveBeenCalledWith(["USD"]));
   });
 
+  it("hydrates a sub-100-shannon line as plain decimal, not exponential notation, and survives into a built batch", async () => {
+    // 42 shannons = 4.2e-7 CKB. (Number(v) / 1e8).toString() renders that as
+    // "4.2e-7", which ckbToShannons's /^\d+(\.\d+)?$/ regex rejects — the row
+    // is then silently dropped by buildBatchLinesFromRecipients, the same
+    // silent-drop class as the FX-refresh regression fixed in Task B.
+    usePayeesStore.setState({ payees: [payee()] });
+    usePayrollBatchesStore.setState({
+      batches: [
+        draftBatch({
+          id: "batch-dust",
+          lines: [
+            {
+              payeeId: "p1",
+              fiat: { currency: "USD", minor: 250n },
+              crypto: { asset: "CKB", value: 42n, decimals: 8 },
+              fxRate: "0.005",
+              feeAllocated: { asset: "CKB", value: 0n, decimals: 8 },
+            },
+          ],
+        }),
+      ],
+      selectedDraftId: null,
+    });
+    vi.mocked(fetchCkbPrices).mockResolvedValue(new Map());
+
+    renderPanel([{ pathname: "/pay", state: { autoSelectBatchId: "batch-dust" } }]);
+
+    await waitFor(() => expect(amountInputs()[0]).toHaveValue("0.00000042"));
+
+    fireEvent.click(buildButton());
+    await waitFor(() => expect(screen.getByDisplayValue(PACKET_JSON)).toBeInTheDocument());
+
+    const built = usePayrollBatchesStore
+      .getState()
+      .batches.find((b) => b.id !== "batch-dust") as PayrollBatch;
+    expect(built).toBeDefined();
+    expect(built.lines).toHaveLength(1);
+    expect(built.lines[0]?.crypto.value).toBe(42n);
+  });
+
   it("switches treasury first, then hydrates the packet and signature slots on the next render", async () => {
     useTreasuryStore.setState({
       treasuries: [TREASURY_A, TREASURY_B],
@@ -327,14 +366,15 @@ describe("PayPanel — FX", () => {
     expect(screen.queryByText(/FX snapshot/)).not.toBeInTheDocument();
   });
 
-  it("BUG PIN: the re-fetch button hands its click event to refetchFx, which throws instead of refetching", async () => {
-    // FxSnapshotPanel renders <button onClick={onRefresh}> and PayPanel passes
-    // `refetchFx` straight in, so React invokes it as refetchFx(mouseEvent).
-    // refetchFx treats its first argument as `rowsOverride` and calls
-    // rows.map(...) on the event → TypeError, swallowed as an unhandled
-    // rejection. The operator sees nothing happen. DraftForm's prop type
-    // `refetchFx: () => void | Promise<void>` is what hides this from tsc.
-    // The "retry" button in the FX error branch has the identical defect.
+  it("the re-fetch button actually re-fetches (previously BUG PIN)", async () => {
+    // FIXED (was BUG PIN): FxSnapshotPanel used to render
+    // <button onClick={onRefresh}>, so React invoked it as
+    // refetchFx(mouseEvent); refetchFx treated its first argument as
+    // `rowsOverride` and called rows.map(...) on the event → TypeError,
+    // swallowed as an unhandled rejection with no visible effect. Both call
+    // sites in FxSnapshotPanel now wrap the handler as
+    // `onClick={() => void onRefresh()}`, so no event ever reaches
+    // refetchFx and it re-fetches with the current draft rows instead.
     usePayeesStore.setState({ payees: [payee()] });
     vi.mocked(fetchCkbPrices).mockResolvedValue(new Map([["USD", USD_QUOTE]]));
     renderPanel();
@@ -343,16 +383,33 @@ describe("PayPanel — FX", () => {
     vi.mocked(fetchCkbPrices)
       .mockClear()
       .mockResolvedValue(new Map([["USD", { ...USD_QUOTE, rate: "0.01" }]]));
-    const rejections = await captureUnhandledRejections(() => {
-      fireEvent.click(screen.getByRole("button", { name: "re-fetch" }));
-    });
+    fireEvent.click(screen.getByRole("button", { name: "re-fetch" }));
 
-    expect(rejections.map((r) => (r as Error).message)).toEqual([
-      "rows.map is not a function",
-    ]);
-    expect(fetchCkbPrices).not.toHaveBeenCalled();
-    // Amounts are untouched — no 250 CKB re-quote reaches the row.
-    expect(amountInputs()[0]).toHaveValue("500");
+    await waitFor(() => expect(fetchCkbPrices).toHaveBeenCalledWith(["USD"]));
+    // $2.50 at the new rate (1 CKB = 0.01 USD) re-quotes to 250 CKB.
+    await waitFor(() => expect(amountInputs()[0]).toHaveValue("250"));
+  });
+
+  it("the error-state retry button actually re-fetches (previously same bug as re-fetch)", async () => {
+    // Same defect and fix as "the re-fetch button actually re-fetches" above,
+    // but through FxSnapshotPanel's OTHER call site — the inline "retry" link
+    // shown in its error branch. Task B wrapped both buttons identically
+    // (`onClick={() => void onRefresh()}`), but only the success-state
+    // "re-fetch" button had a test; this button was left exercising the same
+    // MouseEvent-as-rowsOverride bug unverified.
+    usePayeesStore.setState({ payees: [payee()] });
+    vi.mocked(fetchCkbPrices).mockRejectedValue(new Error("CoinGecko HTTP 429 Too Many Requests"));
+    renderPanel();
+    await addPayeeFromPicker();
+
+    expect(await screen.findByText(/FX fetch failed: CoinGecko HTTP 429/)).toBeInTheDocument();
+
+    vi.mocked(fetchCkbPrices)
+      .mockClear()
+      .mockResolvedValue(new Map([["USD", USD_QUOTE]]));
+    fireEvent.click(screen.getByRole("button", { name: "retry" }));
+
+    await waitFor(() => expect(fetchCkbPrices).toHaveBeenCalledWith(["USD"]));
   });
 
   it("re-quotes correctly when refetchFx is reached with a real rows array", async () => {

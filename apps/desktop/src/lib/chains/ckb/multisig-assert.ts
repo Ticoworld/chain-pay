@@ -61,8 +61,14 @@ export function dumpInputsForInspection(tx: Transaction, multisig: CkbMultisig):
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (globalThis as any).__chainpay_debug = {
     treasuryAddress: multisig.address,
+    // Open-ended slice (no upper bound): args are 20 bytes normally but 28
+    // for a time-locked treasury (20-byte hash + 8-byte `since`, RFC 0017).
+    // A fixed slice(33, 53) truncates the latter, producing a diagnostic
+    // that falsely disagrees with the real 28-byte lock.args on chain. The
+    // guard above (assertMultisigBytesMatchTreasury) already uses the same
+    // open-ended slice(33) and is since-safe; this mirrors it.
     expectedLockArgs: "0x" + bytesHex(
-      new Uint8Array(addressPayloadFromString(multisig.address).payload.slice(33, 53)),
+      new Uint8Array(addressPayloadFromString(multisig.address).payload.slice(33)),
     ),
     inputs: summary,
   };

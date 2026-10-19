@@ -283,29 +283,3 @@ export async function addPayeeFromPicker(): Promise<void> {
   fireEvent.click(screen.getByRole("button", { name: /to draft/ }));
   await waitFor(() => expect(fetchCkbPrices).toHaveBeenCalled());
 }
-
-/**
- * Run `fn` with Vitest's unhandled-rejection reporter detached, returning the
- * rejections that escaped. Needed only to pin a path that is currently broken
- * in a fire-and-forget handler — see the re-fetch BUG PIN.
- */
-export async function captureUnhandledRejections(fn: () => void): Promise<unknown[]> {
-  const saved = process.listeners("unhandledRejection");
-  process.removeAllListeners("unhandledRejection");
-  const caught: unknown[] = [];
-  const capture = (reason: unknown): void => {
-    caught.push(reason);
-  };
-  process.on("unhandledRejection", capture);
-  try {
-    fn();
-    // Let Node deliver the rejection before we hand the listeners back.
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  } finally {
-    process.off("unhandledRejection", capture);
-    for (const listener of saved) {
-      process.on("unhandledRejection", listener as (reason: unknown) => void);
-    }
-  }
-  return caught;
-}

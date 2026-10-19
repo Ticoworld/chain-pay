@@ -168,4 +168,25 @@ describe("dumpInputsForInspection", () => {
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
+
+  // A time-locked treasury's lock.args is 28 bytes (20-byte blake160 hash +
+  // 8-byte `since`, RFC 0017), not the usual 20. `dumpInputsForInspection`
+  // used to hardcode `payload.slice(33, 53)`, silently truncating to 20
+  // bytes — an operator investigating a real -52 would compare that
+  // truncated value against the chain's real 28-byte lock.args, see a
+  // mismatch, and wrongly conclude config drift. This is the case the
+  // slice(33) fix (no upper bound) actually exists for.
+  it("publishes the full 28-byte args for a time-locked (since-bearing) treasury, not a truncated 20", () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const timeLocked: CkbMultisigConfig = { ...CFG, since: 12_345n };
+    const multisig = multisigFor(timeLocked);
+    const tx = Transaction.from({ inputs: [], outputs: [], outputsData: [] });
+
+    dumpInputsForInspection(tx, multisig);
+
+    const debug = (globalThis as any).__chainpay_debug;
+    const expected = lockArgsFromConfig(timeLocked);
+    expect(expected).toHaveLength(28); // sanity: fixture really is time-locked
+    expect(debug.expectedLockArgs).toBe("0x" + bytesHex(expected));
+  });
 });

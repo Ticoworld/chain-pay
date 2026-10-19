@@ -70,11 +70,11 @@ interface PayrollBatchesStore {
   markBroadcastCountdown: (batchId: string) => void;
   /** Cancel a pending broadcast_countdown — returns to approved without clearing sigs or autoBroadcast flag. */
   cancelAutoBroadcast: (batchId: string) => void;
-  /** Lock the broadcast slot (idempotent via broadcastInFlight guard) and transition to broadcast_initiating. */
-  markBroadcastInitiating: (batchId: string) => void;
+  /** Atomically claim the send; returns false if another callback already claimed it. */
+  markBroadcastInitiating: (batchId: string) => boolean;
   /** Record a broadcast failure — sets broadcastError, clears broadcastInFlight, transitions to broadcast_failed. */
   markBroadcastFailed: (batchId: string, error: string) => void;
-  /** Operator re-arms after a broadcast failure — returns to approved and clears broadcastError. */
+  /** Operator re-arms the countdown after a broadcast failure. */
   retryAutoBroadcast: (batchId: string) => void;
   /** Transition a confirmed (or post_failed) batch into posting — clears any prior postError. */
   markPosting: (batchId: string) => void;
@@ -284,14 +284,17 @@ export const usePayrollBatchesStore = create<PayrollBatchesStore>()(
         }));
       },
       markBroadcastInitiating: (batchId) => {
+        let claimed = false;
         set((s) => ({
           batches: s.batches.map((b) => {
             if (b.id !== batchId) return b;
             if (b.broadcastInFlight === true) return b; // idempotency guard
             if (!canTransition(b.state, "broadcast_initiating")) return b;
+            claimed = true;
             return { ...b, state: "broadcast_initiating" as PayrollBatchState, broadcastInFlight: true };
           }),
         }));
+        return claimed;
       },
       markBroadcastFailed: (batchId, error) => {
         set((s) => ({
@@ -307,9 +310,9 @@ export const usePayrollBatchesStore = create<PayrollBatchesStore>()(
         set((s) => ({
           batches: s.batches.map((b) => {
             if (b.id !== batchId) return b;
-            if (!canTransition(b.state, "approved")) return b;
-            const { broadcastError: _be, ...rest } = b;
-            return { ...rest, state: "approved" as PayrollBatchState };
+            if (!canTransition(b.state, "broadcast_countdown")) return b;
+            const { broadcastError: _be, broadcastInFlight: _bif, ...rest } = b;
+            return { ...rest, state: "broadcast_countdown" as PayrollBatchState };
           }),
         }));
       },
