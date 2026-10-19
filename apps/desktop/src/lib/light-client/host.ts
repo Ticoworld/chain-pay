@@ -26,6 +26,7 @@ import {
 } from "./recent-watch-block";
 import { deleteIndexedDbDatabase, rescanLock } from "./rescan-lock";
 import { reconcileLiveCells } from "./reconcile-live-cells";
+import type { PaymentObservationReader } from "@/lib/chains/ckb/observe-payment";
 
 export interface SyncSnapshot {
   network: CkbNetwork;
@@ -160,6 +161,20 @@ export class LightClientHost {
 
   async getPeers() {
     return this.requireClient().getPeers();
+  }
+
+  paymentObservationReader(): PaymentObservationReader {
+    const client = this.requireClient();
+    const network = this.network;
+    return {
+      currentNetwork: () => this.client === client ? network : null,
+      getTipHeader: () => client.getTipHeader(),
+      getPeers: () => client.getPeers(),
+      getTransaction: (hash) => client.getTransaction(hash),
+      fetchTransaction: (hash) => client.fetchTransaction(hash),
+      getHeader: (hash) => client.getHeader(hash),
+      fetchHeader: (hash) => client.fetchHeader(hash),
+    };
   }
 
   async getCellsCapacity(searchKey: Parameters<LightClient["getCellsCapacity"]>[0]) {

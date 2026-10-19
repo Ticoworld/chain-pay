@@ -3,6 +3,7 @@ import { useSendsStore } from "@/stores/sends";
 import { postSendJournal } from "@/lib/send/send-journal";
 import { formatFiatMinor, parseFiatMajorToMinor } from "@/lib/send/fiat-value";
 import type { SendRecord, SendState } from "@chain-pay/shared";
+import { CkbPaymentObservation } from "./CkbPaymentObservation";
 
 export function SendHistory() {
   const sends = useSendsStore((s) => s.sends);
@@ -58,6 +59,8 @@ function SendRow({ send }: { send: SendRecord }) {
           ) : null}
         </div>
       </div>
+
+      {send.txHash ? <CkbPaymentObservation chain={send.chain} txHash={send.txHash} /> : null}
 
       {send.state === "posting" ? (
         <p className="text-xs text-fg-muted">Posting to accounting…</p>
