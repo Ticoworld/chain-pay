@@ -13,7 +13,11 @@ wallet software installed. The pinned stack is validated on Linux/amd64
 containers (including Docker Desktop on Windows); ARM/macOS is unverified.
 Docker needs network access to pull images and
 install the committed npm lockfile. Allow several minutes and several GB of disk
-space for the first run. The runner works from PowerShell and Unix shells.
+space for the first run. A measured Windows run took about 19 minutes, dominated
+by a 5.5-minute locked install and an 11-minute ERPNext site setup; downloads and
+hardware can change this substantially. Use fast desktop/backend unit tests for
+ordinary iteration and this full rehearsal before accounting integration review.
+The runner works from PowerShell and Unix shells.
 
 It uses digest-pinned Node 22.14.0, Frappe 15.123.1 / ERPNext 15.123.0,
 MariaDB 10.6 and Redis 6.2 images. Update these deliberately and rerun the entire
@@ -49,7 +53,8 @@ gate when changing the backend baseline. This is a development fixture.
    three linked submitted journals, four payment lines, the expected accounts
    and exact balanced totals (USD 246.90, 123.45 and 123.45).
 7. Runs tests and database audit again in a separate Node process against
-   the same site, then compares identities, counts and CSV hashes.
+   the same site, then compares identities, counts and CSV hashes. Typecheck and
+   lint run once; replay uses the same unchanged sources and dependencies.
 8. Removes only this project's containers, network and volumes, including on
    ordinary failures and interrupts. Sanitized artifacts remain on the host.
 
@@ -73,13 +78,24 @@ The command prints its unique project name and output directory:
 This directory is already ignored by Git. It contains startup/setup/readiness
 logs, a separate locked-install log, first-run and replay test logs, independent database audits, sanitized
 JSON identities, synthetic CSV/PDF reports, comparison result and cleanup log.
+Each named stage prints pass/fail and elapsed seconds. `stages.json` records
+the durations, first failing stage and cleanup result, so setup/download cost is
+visible separately from the actual HTTP tests. Commands have a 15-minute ceiling;
+the locked install allows 30 minutes and cleanup allows 60 seconds. A timed-out
+Docker CLI is terminated, then project cleanup is attempted. If the daemon is
+unresponsive, the printed emergency command remains necessary.
+
 Check the failing stage's log if the command exits nonzero. Npm registry/network
 failures do not establish an application failure. ERPNext can emit a Tax Rule
 fixture warning during company setup; passing additionally requires actual
 submitted journals and reports. Completed-response path/status/duration evidence is saved
 in the summaries; a request without a completed response may have no timing entry.
-The runner also attempts to retain a failure summary before
-cleanup. It does not record authorization headers or request bodies. Production
+The runner also attempts to retain a failure summary and `failure-http.log`
+before cleanup. The latter extracts only method/path/status and exception class
+from the server log's last 200 lines, retaining at most 30 events. Request bodies,
+headers, query strings and exception messages are omitted; a missing log or an
+unavailable backend is reported as a diagnostic-stage failure. It does not copy
+the raw server log. Production
 HTTP deadlines remain unchanged; a stalled posting request still fails the gate.
 
 Credentials transfer directly between containers over Docker stdin. They are

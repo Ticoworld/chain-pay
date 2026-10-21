@@ -19,6 +19,8 @@ if [ "${1:-}" = install ]; then
   [ "$installed" = true ] || exit 1
   exit 0
 fi
-node node_modules/typescript/bin/tsc -p tests/accounting-acceptance/tsconfig.json
-node node_modules/eslint/bin/eslint.js --config apps/desktop/eslint.config.js 'tests/accounting-acceptance/*.ts'
+if [ "${1:-}" != replay ]; then
+  node node_modules/typescript/bin/tsc -p tests/accounting-acceptance/tsconfig.json
+  node node_modules/eslint/bin/eslint.js --config apps/desktop/eslint.config.js 'tests/accounting-acceptance/*.ts'
+fi
 node node_modules/vitest/vitest.mjs run --config tests/accounting-acceptance/vitest.config.ts
