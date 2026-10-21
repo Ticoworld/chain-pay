@@ -4,14 +4,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 function makeMockBridge(overrides?: {
   statusExists?: boolean;
   lockArgs?: string;
-  mnemonic?: string;
 }) {
   const lockArgs = overrides?.lockArgs ?? "0x" + "ab".repeat(20);
-  const mnemonic = overrides?.mnemonic ?? "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
   return {
     status: vi.fn().mockResolvedValue({ exists: overrides?.statusExists ?? false }),
-    create: vi.fn().mockResolvedValue({ id: "main", lockArgs, mnemonic }),
+    create: vi.fn().mockResolvedValue({ id: "main", lockArgs }),
     import: vi.fn().mockResolvedValue({ id: "main", lockArgs }),
     delete: vi.fn().mockResolvedValue({ ok: true }),
   };
@@ -73,27 +71,22 @@ describe("useKeyvaultStore", () => {
       mountBridge(makeMockBridge({ lockArgs }));
       const { useKeyvaultStore } = await import("./keyvault-store");
 
-      await useKeyvaultStore
-        .getState()
-        .importMnemonic(
-          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-          "password123",
-        );
+      await useKeyvaultStore.getState().importMnemonic("password123");
 
       const s = useKeyvaultStore.getState();
       expect(s.exists).toBe(true);
       expect(s.lockArgs).toBe(lockArgs);
     });
 
-    it("delegates mnemonic and password to the bridge", async () => {
+    it("delegates only the password to the bridge", async () => {
       const bridge = makeMockBridge();
       mountBridge(bridge);
       const { useKeyvaultStore } = await import("./keyvault-store");
 
-      await useKeyvaultStore.getState().importMnemonic("word1 word2 word3", "mypassword");
+      await useKeyvaultStore.getState().importMnemonic("mypassword");
 
       expect(bridge.import).toHaveBeenCalledOnce();
-      expect(bridge.import).toHaveBeenCalledWith("word1 word2 word3", "mypassword");
+      expect(bridge.import).toHaveBeenCalledWith("mypassword");
     });
   });
 
@@ -110,16 +103,13 @@ describe("useKeyvaultStore", () => {
       expect(s.lockArgs).toBe(lockArgs);
     });
 
-    it("returns the mnemonic to the caller without storing it in state", async () => {
-      const expectedMnemonic = "test mnemonic phrase words for the keyvault here";
-      mountBridge(makeMockBridge({ mnemonic: expectedMnemonic }));
+    it("returns no recovery material to the caller or store", async () => {
+      mountBridge(makeMockBridge());
       const { useKeyvaultStore } = await import("./keyvault-store");
 
       const result = await useKeyvaultStore.getState().createNew("pw");
 
-      // Mnemonic returned to caller.
-      expect(result.mnemonic).toBe(expectedMnemonic);
-      // Mnemonic NOT in store state — the store has no mnemonic field.
+      expect(result).toBeUndefined();
       expect(Object.keys(useKeyvaultStore.getState())).not.toContain("mnemonic");
     });
   });
@@ -137,7 +127,7 @@ describe("useKeyvaultStore", () => {
         address: "ckt1someaddress",
       });
 
-      await useKeyvaultStore.getState().deleteVault();
+      await useKeyvaultStore.getState().deleteVault("walletPassword");
 
       const s = useKeyvaultStore.getState();
       expect(s.exists).toBe(false);
@@ -145,15 +135,15 @@ describe("useKeyvaultStore", () => {
       expect(s.address).toBeNull();
     });
 
-    it("calls the bridge delete with the correct keyvaultId", async () => {
+    it("calls the bridge delete with the vault id and password", async () => {
       const bridge = makeMockBridge();
       mountBridge(bridge);
       const { useKeyvaultStore } = await import("./keyvault-store");
 
-      await useKeyvaultStore.getState().deleteVault();
+      await useKeyvaultStore.getState().deleteVault("walletPassword");
 
       expect(bridge.delete).toHaveBeenCalledOnce();
-      expect(bridge.delete).toHaveBeenCalledWith("main");
+      expect(bridge.delete).toHaveBeenCalledWith("main", "walletPassword");
     });
   });
 });

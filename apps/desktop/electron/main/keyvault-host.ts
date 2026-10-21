@@ -14,7 +14,7 @@
  * No raw secret is logged, returned over IPC, or held beyond the call frame.
  */
 
-import { ipcMain } from "electron";
+import { clipboard, dialog, ipcMain } from "electron";
 import {
   Transaction,
   WitnessArgs,
@@ -107,6 +107,18 @@ function deriveLockArgsGuarded(
 /** Default vault id — v1 supports exactly one local keyvault. */
 const VAULT_ID = "main";
 
+async function showRecoveryWords(phrase: string): Promise<void> {
+  await dialog.showMessageBox({
+    type: "warning",
+    title: "ChainPay recovery words",
+    message: phrase,
+    detail: "Write these words down in order and store them offline. ChainPay will not copy them to the app window or clipboard.",
+    buttons: ["I have written them down"],
+    defaultId: 0,
+    noLink: true,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Exported pure functions (unit-testable without Electron)
 // ---------------------------------------------------------------------------
@@ -121,14 +133,16 @@ export async function importVault(
   req: { mnemonic: string; password: string },
   deps: Deps,
 ): Promise<{ id: string; lockArgs: string }> {
-  ImportRequest.parse(req);
+  ImportRequest.parse({ password: req.password });
+  if (!req.mnemonic.trim()) throw new Error("Recovery words are empty");
+  if (deps.store.has(VAULT_ID)) throw new Error("keyvault already exists");
 
   const mnemonic = new TextEncoder().encode(req.mnemonic);
   const password = new TextEncoder().encode(req.password);
   try {
     const blob = deps.wasm.import_seed_phrase(mnemonic, password);
-    deps.store.write(VAULT_ID, Buffer.from(blob));
     const args = deps.wasm.derive_lock_args(blob, password, 0);
+    deps.store.create(VAULT_ID, Buffer.from(blob));
     return { id: VAULT_ID, lockArgs: hexFrom(args) };
   } finally {
     mnemonic.fill(0);
@@ -265,29 +279,49 @@ export function registerKeyvaultHost(depsIn: Deps): void {
     ...depsIn,
     limiter: depsIn.limiter ?? new KeyvaultRateLimiter(),
   };
+  let vaultSetupPending = false;
+  async function withEmptyVault<T>(work: () => Promise<T>): Promise<T> {
+    if (vaultSetupPending || deps.store.has(VAULT_ID)) throw new Error("keyvault already exists");
+    vaultSetupPending = true;
+    try {
+      return await work();
+    } finally {
+      vaultSetupPending = false;
+    }
+  }
 
-  ipcMain.handle(KEYVAULT_CHANNELS.import, (_e, r: unknown) =>
-    importVault(r as { mnemonic: string; password: string }, deps),
-  );
+  ipcMain.handle(KEYVAULT_CHANNELS.import, (_e, r: unknown) => withEmptyVault(async () => {
+    const { password } = ImportRequest.parse(r);
+    let mnemonic: string;
+    try {
+      mnemonic = (await clipboard.readText()).trim();
+    } finally {
+      clipboard.clear();
+    }
+    if (!mnemonic) throw new Error("Clipboard has no recovery words");
+    if (mnemonic.length > 1_024) throw new Error("Recovery words are too long");
+    return importVault({ mnemonic, password }, deps);
+  }));
 
-  ipcMain.handle(KEYVAULT_CHANNELS.create, (_e, r: unknown) => {
+  ipcMain.handle(KEYVAULT_CHANNELS.create, (_e, r: unknown) => withEmptyVault(async () => {
     const { password: pw } = CreateRequest.parse(r);
     const password = new TextEncoder().encode(pw);
+    let mnemonicBytes: Uint8Array | null = null;
     try {
       const result = deps.wasm.generate_master_seed(password) as {
         blob: Uint8Array;
         mnemonic: Uint8Array;
       };
-      deps.store.write(VAULT_ID, Buffer.from(result.blob));
+      mnemonicBytes = result.mnemonic;
       const args = hexFrom(deps.wasm.derive_lock_args(result.blob, password, 0));
-      const phrase = new TextDecoder().decode(result.mnemonic);
-      // Zeroize the mnemonic copy returned from WASM.
-      result.mnemonic.fill(0);
-      return { id: VAULT_ID, lockArgs: args, mnemonic: phrase };
+      await showRecoveryWords(new TextDecoder().decode(mnemonicBytes));
+      deps.store.create(VAULT_ID, Buffer.from(result.blob));
+      return { id: VAULT_ID, lockArgs: args };
     } finally {
+      mnemonicBytes?.fill(0);
       password.fill(0);
     }
-  });
+  }));
 
   ipcMain.handle(KEYVAULT_CHANNELS.signTx, (_e, r: unknown) =>
     signTxInVault(r, deps),
@@ -301,24 +335,27 @@ export function registerKeyvaultHost(depsIn: Deps): void {
     unlockDeriveInVault(r, deps),
   );
 
-  ipcMain.handle(KEYVAULT_CHANNELS.export, (_e, r: unknown) => {
+  ipcMain.handle(KEYVAULT_CHANNELS.export, async (_e, r: unknown) => {
     const req = ExportRequest.parse(r);
     if (!deps.store.has(req.keyvaultId)) {
       throw new Error(`keyvault not found: ${req.keyvaultId}`);
     }
     const blob = deps.store.read(req.keyvaultId);
     const password = new TextEncoder().encode(req.password);
-    deps.limiter?.check(req.keyvaultId);
+    let mnemonicBytes: Uint8Array | null = null;
     try {
-      const mnemonicBytes = deps.wasm.export_seed_phrase(blob, password);
-      const mnemonic = new TextDecoder().decode(mnemonicBytes);
-      mnemonicBytes.fill(0);
+      deps.limiter?.check(req.keyvaultId);
+      try {
+        mnemonicBytes = deps.wasm.export_seed_phrase(blob, password);
+      } catch (err) {
+        deps.limiter?.recordFailure(req.keyvaultId);
+        throw err;
+      }
+      await showRecoveryWords(new TextDecoder().decode(mnemonicBytes));
       deps.limiter?.recordSuccess(req.keyvaultId);
-      return { mnemonic };
-    } catch (err) {
-      deps.limiter?.recordFailure(req.keyvaultId);
-      throw err;
+      return { ok: true };
     } finally {
+      mnemonicBytes?.fill(0);
       password.fill(0);
     }
   });
@@ -331,15 +368,18 @@ export function registerKeyvaultHost(depsIn: Deps): void {
     const blob = deps.store.read(req.keyvaultId);
     const oldPw = new TextEncoder().encode(req.oldPassword);
     const newPw = new TextEncoder().encode(req.newPassword);
-    deps.limiter?.check(req.keyvaultId);
     try {
-      const newBlob = deps.wasm.change_password(blob, oldPw, newPw);
+      deps.limiter?.check(req.keyvaultId);
+      let newBlob: Uint8Array;
+      try {
+        newBlob = deps.wasm.change_password(blob, oldPw, newPw);
+      } catch (err) {
+        deps.limiter?.recordFailure(req.keyvaultId);
+        throw err;
+      }
       deps.store.write(req.keyvaultId, Buffer.from(newBlob));
       deps.limiter?.recordSuccess(req.keyvaultId);
       return { ok: true };
-    } catch (err) {
-      deps.limiter?.recordFailure(req.keyvaultId);
-      throw err;
     } finally {
       oldPw.fill(0);
       newPw.fill(0);
@@ -348,7 +388,14 @@ export function registerKeyvaultHost(depsIn: Deps): void {
 
   ipcMain.handle(KEYVAULT_CHANNELS.delete, (_e, r: unknown) => {
     const req = DeleteRequest.parse(r);
-    deps.store.delete(req.keyvaultId);
-    return { ok: true };
+    if (!deps.store.has(req.keyvaultId)) throw new Error(`keyvault not found: ${req.keyvaultId}`);
+    const password = new TextEncoder().encode(req.password);
+    try {
+      deriveLockArgsGuarded(deps, req.keyvaultId, deps.store.read(req.keyvaultId), password, 0);
+      deps.store.delete(req.keyvaultId);
+      return { ok: true };
+    } finally {
+      password.fill(0);
+    }
   });
 }

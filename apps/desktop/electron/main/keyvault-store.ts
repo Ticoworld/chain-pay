@@ -39,6 +39,10 @@ export class KeyvaultStore {
     return readFileSync(this.vaultPath(id));
   }
 
+  create(id: string, blob: Buffer): void {
+    writeFileSync(this.vaultPath(id), blob, { flag: "wx", mode: 0o600 });
+  }
+
   write(id: string, blob: Buffer): void {
     writeFileSync(this.vaultPath(id), blob, { mode: 0o600 });
   }

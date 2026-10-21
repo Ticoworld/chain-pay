@@ -57,13 +57,9 @@ vi.mock("@/lib/light-client/client", () => ({
 // ---------------------------------------------------------------------------
 
 const LOCK_ARGS = "0x" + "ab".repeat(20);
-const TEST_MNEMONIC =
-  "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-
 function makeMockBridge(opts?: {
   statusExists?: boolean;
   createLockArgs?: string;
-  createMnemonic?: string;
   importLockArgs?: string;
   createReject?: Error;
   importReject?: Error;
@@ -75,11 +71,11 @@ function makeMockBridge(opts?: {
       : vi.fn().mockResolvedValue({
           id: "main",
           lockArgs: opts?.createLockArgs ?? LOCK_ARGS,
-          mnemonic: opts?.createMnemonic ?? TEST_MNEMONIC,
         }),
     import: opts?.importReject
       ? vi.fn().mockRejectedValue(opts.importReject)
       : vi.fn().mockResolvedValue({ id: "main", lockArgs: opts?.importLockArgs ?? LOCK_ARGS }),
+    export: vi.fn().mockResolvedValue({ ok: true }),
     delete: vi.fn().mockResolvedValue({ ok: true }),
   };
 }
@@ -162,7 +158,7 @@ describe("KeyvaultSetupPanel — create flow", () => {
     expect(screen.getByText(/strength:/i)).toBeInTheDocument();
   });
 
-  it("shows the mnemonic after successful creation", async () => {
+  it("transitions to active without placing recovery words in the renderer", async () => {
     render(<KeyvaultSetupPanel />);
     fireEvent.click(screen.getByRole("button", { name: /create new wallet/i }));
     fireEvent.change(screen.getByLabelText(/wallet password/i), {
@@ -173,14 +169,11 @@ describe("KeyvaultSetupPanel — create flow", () => {
       fireEvent.click(screen.getByRole("button", { name: /create wallet/i }));
     });
 
-    await waitFor(() => {
-      expect(screen.getByRole("list", { name: /recovery mnemonic/i })).toBeInTheDocument();
-    });
-    // "about" is the unique 12th word in the test mnemonic — avoids multi-match on "abandon".
-    expect(screen.getByText("about")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText(/lock args/i)).toBeInTheDocument());
+    expect(screen.queryByRole("list", { name: /recovery mnemonic/i })).not.toBeInTheDocument();
   });
 
-  it("clears the mnemonic from the DOM when the user confirms", async () => {
+  it("keeps the wallet password and recovery words out of the active panel", async () => {
     render(<KeyvaultSetupPanel />);
     fireEvent.click(screen.getByRole("button", { name: /create new wallet/i }));
     fireEvent.change(screen.getByLabelText(/wallet password/i), {
@@ -191,19 +184,9 @@ describe("KeyvaultSetupPanel — create flow", () => {
       fireEvent.click(screen.getByRole("button", { name: /create wallet/i }));
     });
 
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: /i've written it down/i })).toBeInTheDocument();
-    });
-
-    // Confirm — this should clear the mnemonic and transition to active.
-    act(() => {
-      fireEvent.click(screen.getByRole("button", { name: /i've written it down/i }));
-    });
-
-    // Mnemonic words should no longer be visible.
+    await waitFor(() => expect(screen.getByText(/lock args/i)).toBeInTheDocument());
     expect(screen.queryByRole("list", { name: /recovery mnemonic/i })).not.toBeInTheDocument();
-    // Lock-args box visible in active state.
-    expect(screen.getByText(/lock args/i)).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("strongPass!1")).not.toBeInTheDocument();
   });
 
   it("shows an error banner when createNew rejects", async () => {
@@ -230,21 +213,17 @@ describe("KeyvaultSetupPanel — import flow", () => {
   it("transitions to import form on Import click", () => {
     render(<KeyvaultSetupPanel />);
     fireEvent.click(screen.getByRole("button", { name: /import mnemonic/i }));
-    expect(screen.getByLabelText(/mnemonic phrase/i)).toBeInTheDocument();
+    expect(screen.getByText(/clears the current clipboard/i)).toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
     expect(screen.getByLabelText(/wallet password/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /import wallet/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /import from clipboard/i })).toBeInTheDocument();
   });
 
-  it("disables Import button until mnemonic and password are filled", () => {
+  it("disables Import button until the password is filled", () => {
     render(<KeyvaultSetupPanel />);
     fireEvent.click(screen.getByRole("button", { name: /import mnemonic/i }));
-    const importBtn = screen.getByRole("button", { name: /import wallet/i });
+    const importBtn = screen.getByRole("button", { name: /import from clipboard/i });
     expect(importBtn).toBeDisabled();
-
-    fireEvent.change(screen.getByLabelText(/mnemonic phrase/i), {
-      target: { value: TEST_MNEMONIC },
-    });
-    expect(importBtn).toBeDisabled(); // still needs password
 
     fireEvent.change(screen.getByLabelText(/wallet password/i), {
       target: { value: "myPassword1!" },
@@ -255,15 +234,12 @@ describe("KeyvaultSetupPanel — import flow", () => {
   it("calls importMnemonic on the store and transitions to active", async () => {
     render(<KeyvaultSetupPanel />);
     fireEvent.click(screen.getByRole("button", { name: /import mnemonic/i }));
-    fireEvent.change(screen.getByLabelText(/mnemonic phrase/i), {
-      target: { value: TEST_MNEMONIC },
-    });
     fireEvent.change(screen.getByLabelText(/wallet password/i), {
       target: { value: "myPassword1!" },
     });
 
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /import wallet/i }));
+      fireEvent.click(screen.getByRole("button", { name: /import from clipboard/i }));
     });
 
     await waitFor(() => {
@@ -278,15 +254,12 @@ describe("KeyvaultSetupPanel — import flow", () => {
     mountBridge(bridge);
     render(<KeyvaultSetupPanel />);
     fireEvent.click(screen.getByRole("button", { name: /import mnemonic/i }));
-    fireEvent.change(screen.getByLabelText(/mnemonic phrase/i), {
-      target: { value: "bad mnemonic phrase here" },
-    });
     fireEvent.change(screen.getByLabelText(/wallet password/i), {
       target: { value: "myPassword1!" },
     });
 
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /import wallet/i }));
+      fireEvent.click(screen.getByRole("button", { name: /import from clipboard/i }));
     });
 
     await waitFor(() => {
@@ -311,11 +284,32 @@ describe("KeyvaultSetupPanel — active state", () => {
     expect(screen.getByText(LOCK_ARGS)).toBeInTheDocument();
   });
 
+  it("opens recovery words through the main-process bridge without rendering them", async () => {
+    const bridge = makeMockBridge();
+    mountBridge(bridge);
+    seedActiveStore();
+    render(<KeyvaultSetupPanel />);
+    fireEvent.click(screen.getByRole("button", { name: /back up recovery words/i }));
+    fireEvent.change(screen.getByLabelText(/wallet password/i), {
+      target: { value: "strongPass!1" },
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /show recovery words/i }));
+    });
+
+    expect(bridge.export).toHaveBeenCalledWith("main", "strongPass!1");
+    expect(screen.queryByRole("list", { name: /recovery mnemonic/i })).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue("strongPass!1")).not.toBeInTheDocument();
+  });
+
   it("shows delete confirmation flow", async () => {
     seedActiveStore();
     render(<KeyvaultSetupPanel />);
     fireEvent.click(screen.getByRole("button", { name: /delete wallet/i }));
     expect(screen.getByRole("button", { name: /yes, delete/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /yes, delete/i })).toBeDisabled();
+    expect(screen.getByLabelText(/wallet password/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /cancel/i })).toBeInTheDocument();
   });
 
@@ -323,6 +317,9 @@ describe("KeyvaultSetupPanel — active state", () => {
     seedActiveStore();
     render(<KeyvaultSetupPanel />);
     fireEvent.click(screen.getByRole("button", { name: /delete wallet/i }));
+    fireEvent.change(screen.getByLabelText(/wallet password/i), {
+      target: { value: "walletPassword" },
+    });
 
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /yes, delete/i }));

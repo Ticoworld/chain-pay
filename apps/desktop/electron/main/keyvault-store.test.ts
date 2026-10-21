@@ -18,6 +18,13 @@ describe("KeyvaultStore", () => {
     expect([...s.read("main")]).toEqual([1, 2, 3]);
   });
 
+  it("creates a vault exclusively so a second process cannot replace it", () => {
+    const s = new KeyvaultStore(dir);
+    s.create("main", Buffer.from([1, 2, 3]));
+    expect(() => s.create("main", Buffer.from([9, 9, 9]))).toThrow();
+    expect([...s.read("main")]).toEqual([1, 2, 3]);
+  });
+
   it("rejects path-traversal ids", () => {
     const s = new KeyvaultStore(dir);
     expect(() => s.write("../evil", Buffer.from([0]))).toThrow();
